@@ -1,0 +1,144 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global styles */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply antialiased;
+  background: #0b0f14; /* deep black background like the reference */
+  overscroll-behavior-y: none;
+  overflow-x: hidden;
+}
+
+/* Fancy glow utility for the card */
+.pulse-glass {
+  @apply bg-white/10 backdrop-blur-xl border border-white/20;
+}
+
+.neon-text {
+  text-shadow: 0 0 20px rgba(124, 58, 237, 0.5), 0 0 40px rgba(6, 182, 212, 0.35);
+}
+
+/* Hide scrollbars in overflow-x pill rows on mobile */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Safe area helpers */
+.pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + 80px); }
+.pt-safe { padding-top: calc(env(safe-area-inset-top)); }
+
+/* Gradient blob backgrounds for hero screens */
+.blob-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.blob { filter: blur(60px); opacity: 0.85; }
+.blob-1 { background: radial-gradient(160px 180px at 20% 30%, rgba(251,191,36,.6), transparent 60%); }
+.blob-2 { background: radial-gradient(200px 220px at 70% 30%, rgba(99,102,241,.55), transparent 60%); }
+.blob-3 { background: radial-gradient(220px 240px at 50% 80%, rgba(236,72,153,.5), transparent 60%); }
+
+/* Black glass dock */
+.dock {
+  @apply rounded-[28px] bg-black/60 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.45)];
+}
+.dock-seg { @apply h-12 rounded-2xl flex items-center justify-center text-white/90; }
+
+/* Checkmark, cross-off and success animation for completion */
+.completed {
+  text-decoration: line-through;
+  opacity: 0.6;
+  transition: opacity 0.35s, text-decoration-color 0.4s;
+}
+.checkmark {
+  display: inline-block;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #30e51f 60%, #7cffb6 100%);
+  color: #fff;
+  font-size: 1.1em;
+  margin-right: 0.4em;
+  box-shadow: 0 0 10px #30e51fbb;
+  vertical-align: middle;
+  animation: popIn 0.35s cubic-bezier(0.45,1.73,0.18,0.6);
+}
+@keyframes popIn {
+  from { transform: scale(0.75); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+/* Additional exercise pill */
+.add-ex-pill {
+  @apply px-3 py-1 bg-white/10 rounded-xl text-xs border border-white/10 backdrop-blur-md text-white flex items-center gap-1 my-2;
+  transition: background 0.2s, color 0.2s;
+}
+.add-ex-pill.completed {
+  background: linear-gradient(90deg, #22c55e, #bbf7d0 120%);
+  color: #232323 !important;
+}
+
+/* Toast styling */
+.pulse-toast {
+  position: fixed;
+  left: 0; right: 0; bottom: 88px;
+  display: flex;
+  justify-content: center;
+  z-index: 1000;
+  pointer-events: none;
+}
+.pulse-toast-inner {
+  @apply px-5 py-3 bg-white text-slate-900 rounded-2xl shadow-lg font-semibold text-sm;
+  opacity: 0.98;
+  animation: fadeinout 2.2s cubic-bezier(0.4,0,0.2,1);
+}
+@keyframes fadeinout {
+  0% { opacity: 0; transform: translateY(22px) scale(0.98); }
+  10% { opacity: 1; transform: translateY(0) scale(1); }
+  90% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(12px) scale(1.01); }
+}
+
+/* Celebration animations */
+@keyframes pop-scale {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes flash-fade {
+  0% { opacity: 0; }
+  10% { opacity: 0.8; }
+  100% { opacity: 0; }
+}
+@keyframes fly-up {
+  0% { transform: translateY(8px) scale(0.95); opacity: 0; }
+  30% { transform: translateY(-6px) scale(1.05); opacity: 1; }
+  100% { transform: translateY(-28px) scale(1); opacity: 0; }
+}
+@keyframes burst {
+  0% { transform: translate(0,0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(0.9); opacity: 0; }
+}
+
+.celebrate-check {
+  animation: pop-scale 0.5s cubic-bezier(.2,1,.2,1) forwards;
+}
+.celebrate-flash {
+  animation: flash-fade 0.5s ease forwards;
+}
+.celebrate-badge {
+  animation: fly-up 0.8s ease forwards;
+}
+.confetti-container { pointer-events: none; }
+.confetti-dot {
+  width: 8px; height: 8px; border-radius: 9999px;
+  position: absolute; left: 50%; top: 50%;
+  animation: burst 900ms ease-out forwards;
+}
+
+
+
