@@ -4,6 +4,7 @@ import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/spe
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
 import { callClaude, parseWorkoutWithClaude } from '../lib/claude';
+import { debugLog } from '../utils/debugLogger';
 
 const PROMPT = `You are a workout logging assistant. Parse this voice input and extract workout data.\n\nUser said: [transcribed text]\n\nCommon speech-to-text errors to fix:\n- 'revs' → reps\n- 'wraps' → reps\n- 'sets' might be 'sits'\n- 'kilograms' might be 'kilos', 'kg', 'kgs'\n- Exercise names might be misspelled\n\nReturn ONLY a JSON object (no markdown, no explanation):\n{\n  "exercise": "exercise name",\n  "weight": number in kg,\n  "reps": number,\n  "sets": number (default 1 if not mentioned)\n}\n\nIf you cannot parse it, return: {"error": "Could not understand, please try again"}`;
 
@@ -47,12 +48,14 @@ export default function FocusMode() {
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       utterance.lang = 'en-US';
-      console.log('Speaking:', message);
-      utterance.onstart = () => console.log('Speech started');
-      utterance.onend = () => console.log('Speech ended');
-      utterance.onerror = (e) => console.error('Speech error:', e);
+      debugLog('Speaking', { message });
+      utterance.onstart = () => debugLog('Speech started');
+      utterance.onend = () => debugLog('Speech ended');
+      utterance.onerror = (e) => debugLog('Speech error', { error: e.error, message: e.message });
       window.speechSynthesis.speak(utterance);
-    } catch(e) { console.error('Speech error:', e); }
+    } catch(e) { 
+      debugLog('Speech error exception', { error: e.message, stack: e.stack }); 
+    }
   }
 
   function startRest(seconds, nextLabel) {
@@ -105,9 +108,15 @@ export default function FocusMode() {
   // (All previous speech initialization removed)
 
   useEffect(() => {
-    if (!isSpeechSupported()) return;
+    debugLog("FocusMode: Initializing speech recognition...");
+    if (!isSpeechSupported()) {
+      debugLog("Speech Recognition not supported in this browser");
+      return;
+    }
+    debugLog("Speech Recognition is supported, creating recognizer...");
     const rec = createRecognizer({ lang: 'en-US' });
     recRef.current = rec;
+    debugLog("Recognizer created, attaching handlers...");
     const ctl = attachPressHold(rec, {
       onTranscript: async (t) => {
         addLog(t);
@@ -137,16 +146,16 @@ export default function FocusMode() {
           const result = await parseWorkoutWithClaude(t, context);
           if (result.error) {
             setError(result.error);
-            console.error(result.error);
+            debugLog("Error parsing result", { error: result.error });
           } else {
             setAiParsed(result);
-            console.log('Parsed:', result);
+            debugLog('Parsed result', result);
             
             if (isQuickStart) {
               // Quick Start mode: just log everything as additional exercises
               if (result.exercise) {
                 addAdditionalExercise({ ...result, complete: true });
-                console.log('Quick Start: Logged exercise:', result.exercise);
+                debugLog('Quick Start: Logged exercise', { exercise: result.exercise });
                 // For quick completion, use a simpler message
                 if (result.isQuickComplete) {
                   speakMessage(`Set logged. ${result.exercise}, ${result.reps} reps at ${result.weight} kg.`);
@@ -168,7 +177,7 @@ export default function FocusMode() {
                 const nextProgress = Math.min(prevProgress + 1, setsInPlan);
                 // Store this logged set (reps/weight) and increment
                 logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
-                console.log(`Set logged: ${exName} now at ${nextProgress}/${setsInPlan} sets`);
+                debugLog(`Set logged: ${exName}`, { progress: `${nextProgress}/${setsInPlan} sets` });
                 // Context-aware voice confirmation
                 // For quick completion commands, use simpler format
                 const confirmMsg = result.isQuickComplete 
@@ -182,7 +191,7 @@ export default function FocusMode() {
                 setTimeout(()=> setCelebrateSet(false), 700);
                 if (nextProgress >= setsInPlan) {
                   markExerciseComplete(exName, setsInPlan);
-                  console.log('Exercise completed:', exName);
+                  debugLog('Exercise completed', { exercise: exName });
                   const nextEx = workoutPlan[idx + 1]?.name;
                   // Bigger celebration
                   setCelebrateComplete(true);
@@ -203,25 +212,50 @@ export default function FocusMode() {
                     }
                   }, 900);
                 }
-                console.log('Marked as complete:', exName);
+                debugLog('Marked as complete', { exercise: exName });
               } else if(result.exercise) {
                 addAdditionalExercise({ ...result, complete: true });
-                console.log('Added to additional exercises:', result.exercise);
+                debugLog('Added to additional exercises', { exercise: result.exercise });
               }
             }
           }
         } catch (e) {
           setError("AI parsing failed, try again");
           setAiParsed(null);
-          console.error(e);
+          debugLog("Exception caught in onTranscript", { 
+            error: e.message, 
+            stack: e.stack 
+          });
         }
       },
-      onStart: () => setListening(true),
-      onEnd: () => setListening(false),
-      onError: () => setListening(false)
+      onStart: () => {
+        debugLog("Speech Recognition STARTED");
+        debugLog("Recording state changed to: true");
+        debugLog("Recording started");
+        setListening(true);
+      },
+      onEnd: () => {
+        debugLog("Speech Recognition STOPPED");
+        debugLog("Recording state changed to: false");
+        debugLog("Recording stopped");
+        setListening(false);
+      },
+      onError: (err) => {
+        debugLog("Speech Recognition ERROR", {
+          error: err.error,
+          message: err.message,
+          type: err.type
+        });
+        debugLog("Recording state changed to: false");
+        setListening(false);
+      }
     });
     ctrlRef.current = ctl;
-    return () => { try { rec.stop(); } catch(_){} };
+    debugLog("Speech recognition initialized, ctrlRef set");
+    return () => { 
+      debugLog("FocusMode cleanup: stopping recognizer");
+      try { rec.stop(); } catch(e){ debugLog("Cleanup stop error", { error: e.message }); }
+    };
   }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest]);
   return (
     <div className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-center relative">
@@ -237,46 +271,43 @@ export default function FocusMode() {
       {/* Voice Command Card */}
       <div className="w-full mb-8">
         <button
-          onPointerDown={e => { 
+          onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            ctrlRef.current?.start(); 
+            const currentState = listening ? "recording" : "idle";
+            debugLog("Button clicked", { currentState });
+            debugLog("ctrlRef.current exists", { exists: !!ctrlRef.current });
+            if (listening) {
+              // Stop recording
+              debugLog("Stopping recording...");
+              ctrlRef.current?.stop();
+            } else {
+              // Start recording
+              debugLog("Starting recording...");
+              debugLog("Requesting microphone...");
+              ctrlRef.current?.start();
+            }
           }}
-          onPointerUp={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            ctrlRef.current?.stop();
-          }}
-          onPointerCancel={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            ctrlRef.current?.stop();
-          }}
-          onTouchStart={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            ctrlRef.current?.start();
-          }}
-          onTouchEnd={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            ctrlRef.current?.stop();
-          }}
-          onTouchCancel={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            ctrlRef.current?.stop();
-          }}
-          className="block w-full rounded-3xl p-6 text-left bg-cyan-500/20 border border-cyan-400/30 backdrop-blur-md active:scale-[0.99] transition select-none"
+          className={`block w-full rounded-3xl p-6 text-left backdrop-blur-md active:scale-[0.99] transition select-none ${
+            listening 
+              ? 'bg-red-500/30 border border-red-400/50 animate-pulse' 
+              : 'bg-cyan-500/20 border border-cyan-400/30'
+          }`}
           style={{ userSelect: 'none', touchAction: 'manipulation', WebkitUserSelect: 'none' }}
         >
-          <div className="text-white/90 text-sm select-none">TAP & HOLD</div>
-          <div className="text-white text-xl font-semibold mt-1 select-none">{listening ? 'Listening…' : 'Voice Command'}</div>
+          <div className="text-white/90 text-sm select-none">
+            {listening ? '⏹️ TAP TO STOP' : '🎤 TAP TO RECORD'}
+          </div>
+          <div className="text-white text-xl font-semibold mt-1 select-none">
+            {listening ? 'Recording…' : 'Voice Command'}
+          </div>
           {!isQuickStart && workoutPlan[currentPlanIdx] && (
             <div className="text-white/70 text-xs mt-2 select-none">Logging for: {workoutPlan[currentPlanIdx].name}</div>
           )}
           {isQuickStart && (
-            <div className="text-white/70 text-sm mt-2 select-none">Tap and hold to log exercise</div>
+            <div className="text-white/70 text-sm mt-2 select-none">
+              {listening ? 'Tap again to stop recording' : 'Tap to start logging exercises'}
+            </div>
           )}
         </button>
       </div>

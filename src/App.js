@@ -16,6 +16,7 @@ import History from './screens/History';
 import Onboarding from './screens/Onboarding';
 import Settings from './screens/Settings';
 import { WorkoutProvider } from './state/WorkoutContext';
+import DebugPanel from './components/DebugPanel';
 
 function InnerApp() {
   const [toastMsg, setToastMsg] = useState(null);
@@ -65,6 +66,7 @@ function InnerApp() {
           <div className="pulse-toast-inner">{toastMsg}</div>
         </div>
       )}
+      <DebugPanel />
     </div>
   );
 }
