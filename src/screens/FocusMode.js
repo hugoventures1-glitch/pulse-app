@@ -104,9 +104,42 @@ export default function FocusMode() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  
+  // Store callbacks and values in a ref to avoid re-renders
+  const callbacksRef = useRef({
+    addLog,
+    isQuickStart,
+    workoutPlan,
+    setProgress,
+    logSetCompletion,
+    markExerciseComplete,
+    addAdditionalExercise,
+    nextExerciseIdx,
+    navigate,
+    restDuration,
+    startRest,
+    currentPlanIdx
+  });
+  
+  // Update ref when values change (but don't trigger re-render)
+  useEffect(() => {
+    callbacksRef.current = {
+      addLog,
+      isQuickStart,
+      workoutPlan,
+      setProgress,
+      logSetCompletion,
+      markExerciseComplete,
+      addAdditionalExercise,
+      nextExerciseIdx,
+      navigate,
+      restDuration,
+      startRest,
+      currentPlanIdx
+    };
+  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest, currentPlanIdx]);
 
-  // (All previous speech initialization removed)
-
+  // Initialize speech recognition ONCE on mount, not on every dependency change
   useEffect(() => {
     debugLog("FocusMode: Initializing speech recognition...");
     if (!isSpeechSupported()) {
@@ -117,14 +150,17 @@ export default function FocusMode() {
     const rec = createRecognizer({ lang: 'en-US' });
     recRef.current = rec;
     debugLog("Recognizer created, attaching handlers...");
+    
     const ctl = attachPressHold(rec, {
       onTranscript: async (t) => {
-        addLog(t);
+        // Use refs to access latest values without causing re-renders
+        const callbacks = callbacksRef.current;
+        callbacks.addLog(t);
         setAiParsed(null);
         setError('');
         try {
           // Build context for parser
-          const currentEx = workoutPlan[currentPlanIdx] || null;
+          const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
           const context = {
             currentExercise: currentEx?.name || null,
             lastWeight: null,
@@ -134,8 +170,8 @@ export default function FocusMode() {
           };
           
           // Get last logged values for current exercise
-          if (currentEx && setProgress?.[currentEx.name]) {
-            const values = setProgress[currentEx.name].values || [];
+          if (currentEx && callbacks.setProgress?.[currentEx.name]) {
+            const values = callbacks.setProgress[currentEx.name].values || [];
             if (values.length > 0) {
               const lastSet = values[values.length - 1];
               context.lastWeight = lastSet.weight || null;
@@ -151,10 +187,10 @@ export default function FocusMode() {
             setAiParsed(result);
             debugLog('Parsed result', result);
             
-            if (isQuickStart) {
+            if (callbacks.isQuickStart) {
               // Quick Start mode: just log everything as additional exercises
               if (result.exercise) {
-                addAdditionalExercise({ ...result, complete: true });
+                callbacks.addAdditionalExercise({ ...result, complete: true });
                 debugLog('Quick Start: Logged exercise', { exercise: result.exercise });
                 // For quick completion, use a simpler message
                 if (result.isQuickComplete) {
@@ -164,19 +200,19 @@ export default function FocusMode() {
                 }
                 setCelebrateSet(true); playSuccessTone();
                 setTimeout(()=> setCelebrateSet(false), 700);
-                startRest(restDuration, result.exercise);
+                callbacks.startRest(callbacks.restDuration, result.exercise);
               }
             } else {
               // Normal mode: match against workout plan
-              const planNames = workoutPlan.map(e => e.name.toLowerCase());
+              const planNames = callbacks.workoutPlan.map(e => e.name.toLowerCase());
               const idx = planNames.indexOf((result.exercise||'').toLowerCase());
               if (idx !== -1) {
-                const exName = workoutPlan[idx].name;
-                const setsInPlan = workoutPlan[idx].sets || 1;
-                const prevProgress = (setProgress?.[exName]?.progress || 0);
+                const exName = callbacks.workoutPlan[idx].name;
+                const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
+                const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
                 const nextProgress = Math.min(prevProgress + 1, setsInPlan);
                 // Store this logged set (reps/weight) and increment
-                logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
+                callbacks.logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
                 debugLog(`Set logged: ${exName}`, { progress: `${nextProgress}/${setsInPlan} sets` });
                 // Context-aware voice confirmation
                 // For quick completion commands, use simpler format
@@ -185,14 +221,14 @@ export default function FocusMode() {
                   : `Logged. ${exName}, ${result.reps} reps at ${result.weight} kg. ${setsInPlan - nextProgress} sets remaining.`;
                 speakMessage(confirmMsg);
                 // Start rest timer
-                startRest(restDuration, exName);
+                callbacks.startRest(callbacks.restDuration, exName);
                 // Celebrate set
                 setCelebrateSet(true); playSuccessTone();
                 setTimeout(()=> setCelebrateSet(false), 700);
                 if (nextProgress >= setsInPlan) {
-                  markExerciseComplete(exName, setsInPlan);
+                  callbacks.markExerciseComplete(exName, setsInPlan);
                   debugLog('Exercise completed', { exercise: exName });
-                  const nextEx = workoutPlan[idx + 1]?.name;
+                  const nextEx = callbacks.workoutPlan[idx + 1]?.name;
                   // Bigger celebration
                   setCelebrateComplete(true);
                   // Confetti particles
@@ -205,16 +241,16 @@ export default function FocusMode() {
                   setConfetti(parts);
                   setTimeout(()=>{ setCelebrateComplete(false); setConfetti([]); }, 1200);
                   setTimeout(() => {
-                    nextExerciseIdx();
+                    callbacks.nextExerciseIdx();
                     if (!nextEx) {
                       // Navigate to summary - endWorkout will be called when user taps "Done"
-                      navigate('/summary');
+                      callbacks.navigate('/summary');
                     }
                   }, 900);
                 }
                 debugLog('Marked as complete', { exercise: exName });
               } else if(result.exercise) {
-                addAdditionalExercise({ ...result, complete: true });
+                callbacks.addAdditionalExercise({ ...result, complete: true });
                 debugLog('Added to additional exercises', { exercise: result.exercise });
               }
             }
@@ -252,11 +288,19 @@ export default function FocusMode() {
     });
     ctrlRef.current = ctl;
     debugLog("Speech recognition initialized, ctrlRef set");
+    
+    // Cleanup ONLY on unmount, not on dependency changes
     return () => { 
-      debugLog("FocusMode cleanup: stopping recognizer");
-      try { rec.stop(); } catch(e){ debugLog("Cleanup stop error", { error: e.message }); }
+      debugLog("FocusMode cleanup: stopping recognizer (unmount only)");
+      try { 
+        if (recRef.current) {
+          recRef.current.stop(); 
+        }
+      } catch(e){ 
+        debugLog("Cleanup stop error", { error: e.message }); 
+      }
     };
-  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest]);
+  }, []); // Empty dependency array - only run on mount/unmount
   return (
     <div className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-center relative">
       {/* Offline/Online Status Indicator */}
