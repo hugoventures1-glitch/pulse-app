@@ -8,6 +8,56 @@ import { debugLog } from '../utils/debugLogger';
 
 const PROMPT = `You are a workout logging assistant. Parse this voice input and extract workout data.\n\nUser said: [transcribed text]\n\nCommon speech-to-text errors to fix:\n- 'revs' → reps\n- 'wraps' → reps\n- 'sets' might be 'sits'\n- 'kilograms' might be 'kilos', 'kg', 'kgs'\n- Exercise names might be misspelled\n\nReturn ONLY a JSON object (no markdown, no explanation):\n{\n  "exercise": "exercise name",\n  "weight": number in kg,\n  "reps": number,\n  "sets": number (default 1 if not mentioned)\n}\n\nIf you cannot parse it, return: {"error": "Could not understand, please try again"}`;
 
+// Normalize spoken numbers in transcript (fixes speech-to-text errors)
+function normalizeSpokenNumbers(transcript) {
+  if (!transcript) return transcript;
+  
+  let normalized = transcript;
+  
+  // Map of spoken number words/variations to actual numbers
+  // Using word boundaries to avoid partial matches (e.g., "forty" shouldn't become "4ty")
+  const numberMap = {
+    // 1
+    '\\bwon\\b': '1',
+    '\\bone\\b': '1',
+    // 2
+    '\\bto\\b': '2',
+    '\\btoo\\b': '2',
+    '\\btwo\\b': '2',
+    // 3
+    '\\bthree\\b': '3',
+    // 4
+    '\\bfor\\b': '4',
+    '\\bfour\\b': '4',
+    // 5
+    '\\bfive\\b': '5',
+    // 6
+    '\\bsix\\b': '6',
+    // 7
+    '\\bseven\\b': '7',
+    // 8
+    '\\bate\\b': '8',
+    '\\beight\\b': '8',
+    // 9
+    '\\bnine\\b': '9',
+  };
+  
+  // Apply all replacements
+  Object.entries(numberMap).forEach(([pattern, replacement]) => {
+    const regex = new RegExp(pattern, 'gi');
+    normalized = normalized.replace(regex, replacement);
+  });
+  
+  if (normalized !== transcript) {
+    debugLog("Normalized spoken numbers", { 
+      original: transcript, 
+      normalized 
+    });
+  }
+  
+  return normalized;
+}
+
 export default function FocusMode() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -155,7 +205,11 @@ export default function FocusMode() {
       onTranscript: async (t) => {
         // Use refs to access latest values without causing re-renders
         const callbacks = callbacksRef.current;
-        callbacks.addLog(t);
+        
+        // Normalize spoken numbers BEFORE processing
+        const normalizedTranscript = normalizeSpokenNumbers(t);
+        
+        callbacks.addLog(normalizedTranscript); // Log the normalized version
         setAiParsed(null);
         setError('');
         try {
@@ -179,7 +233,8 @@ export default function FocusMode() {
             }
           }
           
-          const result = await parseWorkoutWithClaude(t, context);
+          // Use normalized transcript for parsing
+          const result = await parseWorkoutWithClaude(normalizedTranscript, context);
           if (result.error) {
             setError(result.error);
             debugLog("Error parsing result", { error: result.error });
