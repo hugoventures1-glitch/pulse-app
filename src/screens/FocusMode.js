@@ -237,18 +237,46 @@ export default function FocusMode() {
       {/* Voice Command Card */}
       <div className="w-full mb-8">
         <button
-          onPointerDown={e => { ctrlRef.current?.start(); }}
-          onPointerUp={() => ctrlRef.current?.stop()}
-          onPointerCancel={() => ctrlRef.current?.stop()}
-          className="block w-full rounded-3xl p-6 text-left bg-cyan-500/20 border border-cyan-400/30 backdrop-blur-md active:scale-[0.99] transition"
+          onPointerDown={e => { 
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.start(); 
+          }}
+          onPointerUp={e => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.stop();
+          }}
+          onPointerCancel={e => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.stop();
+          }}
+          onTouchStart={e => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.start();
+          }}
+          onTouchEnd={e => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.stop();
+          }}
+          onTouchCancel={e => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctrlRef.current?.stop();
+          }}
+          className="block w-full rounded-3xl p-6 text-left bg-cyan-500/20 border border-cyan-400/30 backdrop-blur-md active:scale-[0.99] transition select-none"
+          style={{ userSelect: 'none', touchAction: 'manipulation', WebkitUserSelect: 'none' }}
         >
-          <div className="text-white/90 text-sm">TAP & HOLD</div>
-          <div className="text-white text-xl font-semibold mt-1">{listening ? 'Listening…' : 'Voice Command'}</div>
+          <div className="text-white/90 text-sm select-none">TAP & HOLD</div>
+          <div className="text-white text-xl font-semibold mt-1 select-none">{listening ? 'Listening…' : 'Voice Command'}</div>
           {!isQuickStart && workoutPlan[currentPlanIdx] && (
-            <div className="text-white/70 text-xs mt-2">Logging for: {workoutPlan[currentPlanIdx].name}</div>
+            <div className="text-white/70 text-xs mt-2 select-none">Logging for: {workoutPlan[currentPlanIdx].name}</div>
           )}
           {isQuickStart && (
-            <div className="text-white/70 text-sm mt-2">Tap and hold to log exercise</div>
+            <div className="text-white/70 text-sm mt-2 select-none">Tap and hold to log exercise</div>
           )}
         </button>
       </div>
