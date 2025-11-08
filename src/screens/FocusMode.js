@@ -3,8 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/speech';
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
-import { callClaude, parseWorkoutWithClaude } from '../lib/claude';
-import { debugLog } from '../utils/debugLogger';
+import { parseWorkoutWithClaude } from '../lib/claude';
 
 const PROMPT = `You are a workout logging assistant. Parse this voice input and extract workout data.\n\nUser said: [transcribed text]\n\nCommon speech-to-text errors to fix:\n- 'revs' → reps\n- 'wraps' → reps\n- 'sets' might be 'sits'\n- 'kilograms' might be 'kilos', 'kg', 'kgs'\n- Exercise names might be misspelled\n\nReturn ONLY a JSON object (no markdown, no explanation):\n{\n  "exercise": "exercise name",\n  "weight": number in kg,\n  "reps": number,\n  "sets": number (default 1 if not mentioned)\n}\n\nIf you cannot parse it, return: {"error": "Could not understand, please try again"}`;
 
@@ -48,13 +47,6 @@ function normalizeSpokenNumbers(transcript) {
     normalized = normalized.replace(regex, replacement);
   });
   
-  if (normalized !== transcript) {
-    debugLog("Normalized spoken numbers", { 
-      original: transcript, 
-      normalized 
-    });
-  }
-  
   return normalized;
 }
 
@@ -62,7 +54,7 @@ export default function FocusMode() {
   const navigate = useNavigate();
   const location = useLocation();
   const isQuickStart = location.state?.mode === 'quick';
-  const { addLog, workoutPlan, getCurrentSetNum, logSetCompletion, setProgress, markExerciseComplete, addAdditionalExercise, additionalExercises, currentPlanIdx, nextExerciseIdx, isOnline, isPaused, pauseWorkout, resumeWorkout, endWorkout } = useWorkout();
+  const { addLog, workoutPlan, getCurrentSetNum, logSetCompletion, setProgress, markExerciseComplete, addAdditionalExercise, additionalExercises, currentPlanIdx, nextExerciseIdx, isOnline, isPaused, pauseWorkout, resumeWorkout, endWorkout, prefs } = useWorkout();
   // Rest timer state
   const [restVisible, setRestVisible] = useState(false);
   const [restDuration, setRestDuration] = useState(90); // default seconds
@@ -98,13 +90,9 @@ export default function FocusMode() {
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       utterance.lang = 'en-US';
-      debugLog('Speaking', { message });
-      utterance.onstart = () => debugLog('Speech started');
-      utterance.onend = () => debugLog('Speech ended');
-      utterance.onerror = (e) => debugLog('Speech error', { error: e.error, message: e.message });
       window.speechSynthesis.speak(utterance);
     } catch(e) { 
-      debugLog('Speech error exception', { error: e.message, stack: e.stack }); 
+      // Speech synthesis failed silently
     }
   }
 
@@ -138,6 +126,14 @@ export default function FocusMode() {
     setRestVisible(false);
   }
 
+  useEffect(() => {
+    const preferred = Number(prefs?.restDuration);
+    if (!preferred || preferred <= 0) return;
+    if (restVisible) return; // don't override active countdown
+    setRestDuration(preferred);
+    setRestRemaining(preferred);
+  }, [prefs?.restDuration, restVisible]);
+
   // On resume, if rest panel is open, restart countdown
   useEffect(() => {
     if (!isPaused && restVisible && restRemaining > 0 && !restTimerRef.current) {
@@ -154,6 +150,14 @@ export default function FocusMode() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  const quickDurations = useMemo(() => {
+    const base = [60, 90, 120, 180];
+    const pref = Number(prefs?.restDuration);
+    if (pref && !base.includes(pref)) {
+      return [...base, pref].sort((a, b) => a - b);
+    }
+    return base;
+  }, [prefs?.restDuration]);
   
   // Store callbacks and values in a ref to avoid re-renders
   const callbacksRef = useRef({
@@ -189,31 +193,23 @@ export default function FocusMode() {
     };
   }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest, currentPlanIdx]);
 
-  // Initialize speech recognition ONCE on mount, not on every dependency change
+  // Initialize speech recognition once on mount
   useEffect(() => {
-    debugLog("FocusMode: Initializing speech recognition...");
     if (!isSpeechSupported()) {
-      debugLog("Speech Recognition not supported in this browser");
       return;
     }
-    debugLog("Speech Recognition is supported, creating recognizer...");
     const rec = createRecognizer({ lang: 'en-US' });
     recRef.current = rec;
-    debugLog("Recognizer created, attaching handlers...");
-    
+
     const ctl = attachPressHold(rec, {
       onTranscript: async (t) => {
-        // Use refs to access latest values without causing re-renders
         const callbacks = callbacksRef.current;
-        
-        // Normalize spoken numbers BEFORE processing
         const normalizedTranscript = normalizeSpokenNumbers(t);
-        
-        callbacks.addLog(normalizedTranscript); // Log the normalized version
+
+        callbacks.addLog(normalizedTranscript);
         setAiParsed(null);
         setError('');
         try {
-          // Build context for parser
           const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
           const context = {
             currentExercise: currentEx?.name || null,
@@ -222,8 +218,7 @@ export default function FocusMode() {
             targetWeight: currentEx?.weight || null,
             targetReps: currentEx?.reps || null
           };
-          
-          // Get last logged values for current exercise
+
           if (currentEx && callbacks.setProgress?.[currentEx.name]) {
             const values = callbacks.setProgress[currentEx.name].values || [];
             if (values.length > 0) {
@@ -232,128 +227,92 @@ export default function FocusMode() {
               context.lastReps = lastSet.reps || null;
             }
           }
-          
-          // Use normalized transcript for parsing
+
           const result = await parseWorkoutWithClaude(normalizedTranscript, context);
           if (result.error) {
             setError(result.error);
-            debugLog("Error parsing result", { error: result.error });
-          } else {
-            setAiParsed(result);
-            debugLog('Parsed result', result);
-            
-            if (callbacks.isQuickStart) {
-              // Quick Start mode: just log everything as additional exercises
-              if (result.exercise) {
-                callbacks.addAdditionalExercise({ ...result, complete: true });
-                debugLog('Quick Start: Logged exercise', { exercise: result.exercise });
-                // For quick completion, use a simpler message
-                if (result.isQuickComplete) {
-                  speakMessage(`Set logged. ${result.exercise}, ${result.reps} reps at ${result.weight} kg.`);
-                } else {
-                  speakMessage('Set logged');
-                }
-                setCelebrateSet(true); playSuccessTone();
-                setTimeout(()=> setCelebrateSet(false), 700);
-                callbacks.startRest(callbacks.restDuration, result.exercise);
+            return;
+          }
+
+          setAiParsed(result);
+
+          if (callbacks.isQuickStart) {
+            if (result.exercise) {
+              callbacks.addAdditionalExercise({ ...result, complete: true });
+              if (result.isQuickComplete) {
+                speakMessage(`Set logged. ${result.exercise}, ${result.reps} reps at ${result.weight} kg.`);
+              } else {
+                speakMessage('Set logged');
               }
-            } else {
-              // Normal mode: match against workout plan
-              const planNames = callbacks.workoutPlan.map(e => e.name.toLowerCase());
-              const idx = planNames.indexOf((result.exercise||'').toLowerCase());
-              if (idx !== -1) {
-                const exName = callbacks.workoutPlan[idx].name;
-                const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
-                const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
-                const nextProgress = Math.min(prevProgress + 1, setsInPlan);
-                // Store this logged set (reps/weight) and increment
-                callbacks.logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
-                debugLog(`Set logged: ${exName}`, { progress: `${nextProgress}/${setsInPlan} sets` });
-                // Context-aware voice confirmation
-                // For quick completion commands, use simpler format
-                const confirmMsg = result.isQuickComplete 
-                  ? `Set logged. ${exName}, ${result.reps} reps at ${result.weight} kg.`
-                  : `Logged. ${exName}, ${result.reps} reps at ${result.weight} kg. ${setsInPlan - nextProgress} sets remaining.`;
-                speakMessage(confirmMsg);
-                // Start rest timer
-                callbacks.startRest(callbacks.restDuration, exName);
-                // Celebrate set
-                setCelebrateSet(true); playSuccessTone();
-                setTimeout(()=> setCelebrateSet(false), 700);
-                if (nextProgress >= setsInPlan) {
-                  callbacks.markExerciseComplete(exName, setsInPlan);
-                  debugLog('Exercise completed', { exercise: exName });
-                  const nextEx = callbacks.workoutPlan[idx + 1]?.name;
-                  // Bigger celebration
-                  setCelebrateComplete(true);
-                  // Confetti particles
-                  const parts = Array.from({length: 24}).map((_,i)=>({
-                    id: i,
-                    color: ['#22c55e','#7c3aed','#06b6d4','#f59e0b'][i%4],
-                    dx: (Math.random()*160-80)+ 'px',
-                    dy: (Math.random()*-140-40)+ 'px'
-                  }));
-                  setConfetti(parts);
-                  setTimeout(()=>{ setCelebrateComplete(false); setConfetti([]); }, 1200);
-                  setTimeout(() => {
-                    callbacks.nextExerciseIdx();
-                    if (!nextEx) {
-                      // Navigate to summary - endWorkout will be called when user taps "Done"
-                      callbacks.navigate('/summary');
-                    }
-                  }, 900);
-                }
-                debugLog('Marked as complete', { exercise: exName });
-              } else if(result.exercise) {
-                callbacks.addAdditionalExercise({ ...result, complete: true });
-                debugLog('Added to additional exercises', { exercise: result.exercise });
-              }
+              setCelebrateSet(true); playSuccessTone();
+              setTimeout(() => setCelebrateSet(false), 700);
+              callbacks.startRest(callbacks.restDuration, result.exercise);
             }
+            return;
+          }
+
+          const planNames = callbacks.workoutPlan.map(e => e.name.toLowerCase());
+          const idx = planNames.indexOf((result.exercise || '').toLowerCase());
+          if (idx !== -1) {
+            const exName = callbacks.workoutPlan[idx].name;
+            const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
+            const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
+            const nextProgress = Math.min(prevProgress + 1, setsInPlan);
+
+            callbacks.logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
+
+            const confirmMsg = result.isQuickComplete
+              ? `Set logged. ${exName}, ${result.reps} reps at ${result.weight} kg.`
+              : `Logged. ${exName}, ${result.reps} reps at ${result.weight} kg. ${setsInPlan - nextProgress} sets remaining.`;
+            speakMessage(confirmMsg);
+
+            callbacks.startRest(callbacks.restDuration, exName);
+            setCelebrateSet(true); playSuccessTone();
+            setTimeout(() => setCelebrateSet(false), 700);
+
+            if (nextProgress >= setsInPlan) {
+              callbacks.markExerciseComplete(exName, setsInPlan);
+              const nextEx = callbacks.workoutPlan[idx + 1]?.name;
+              setCelebrateComplete(true);
+              const parts = Array.from({ length: 24 }).map((_, i) => ({
+                id: i,
+                color: ['#22c55e', '#7c3aed', '#06b6d4', '#f59e0b'][i % 4],
+                dx: (Math.random() * 160 - 80) + 'px',
+                dy: (Math.random() * -140 - 40) + 'px'
+              }));
+              setConfetti(parts);
+              setTimeout(() => { setCelebrateComplete(false); setConfetti([]); }, 1200);
+              setTimeout(() => {
+                callbacks.nextExerciseIdx();
+                if (!nextEx) {
+                  callbacks.navigate('/summary');
+                }
+              }, 900);
+            }
+          } else if (result.exercise) {
+            callbacks.addAdditionalExercise({ ...result, complete: true });
           }
         } catch (e) {
           setError("AI parsing failed, try again");
           setAiParsed(null);
-          debugLog("Exception caught in onTranscript", { 
-            error: e.message, 
-            stack: e.stack 
-          });
         }
       },
       onStart: () => {
-        debugLog("Speech Recognition STARTED");
-        debugLog("Recording state changed to: true");
-        debugLog("Recording started");
         setListening(true);
       },
       onEnd: () => {
-        debugLog("Speech Recognition STOPPED");
-        debugLog("Recording state changed to: false");
-        debugLog("Recording stopped");
         setListening(false);
       },
-      onError: (err) => {
-        debugLog("Speech Recognition ERROR", {
-          error: err.error,
-          message: err.message,
-          type: err.type
-        });
-        debugLog("Recording state changed to: false");
+      onError: () => {
         setListening(false);
       }
     });
     ctrlRef.current = ctl;
-    debugLog("Speech recognition initialized, ctrlRef set");
-    
-    // Cleanup ONLY on unmount, not on dependency changes
-    return () => { 
-      debugLog("FocusMode cleanup: stopping recognizer (unmount only)");
-      try { 
-        if (recRef.current) {
-          recRef.current.stop(); 
-        }
-      } catch(e){ 
-        debugLog("Cleanup stop error", { error: e.message }); 
-      }
+
+    return () => {
+      try {
+        recRef.current?.stop();
+      } catch (_) {}
     };
   }, []); // Empty dependency array - only run on mount/unmount
   return (
@@ -373,17 +332,9 @@ export default function FocusMode() {
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            const currentState = listening ? "recording" : "idle";
-            debugLog("Button clicked", { currentState });
-            debugLog("ctrlRef.current exists", { exists: !!ctrlRef.current });
             if (listening) {
-              // Stop recording
-              debugLog("Stopping recording...");
               ctrlRef.current?.stop();
             } else {
-              // Start recording
-              debugLog("Starting recording...");
-              debugLog("Requesting microphone...");
               ctrlRef.current?.start();
             }
           }}
@@ -560,8 +511,11 @@ export default function FocusMode() {
                 </div>
               </div>
               {/* Quick duration controls */}
-              <div className="mt-3 grid grid-cols-4 gap-2">
-                {[60,90,120,180].map(s => (
+              <div className="mt-3 text-white/60 text-xs">
+                Default rest: {prefs?.restDuration || restDuration}s
+              </div>
+              <div className="mt-2 grid grid-cols-4 gap-2">
+                {quickDurations.map(s => (
                   <button
                     key={s}
                     onClick={() => {

@@ -6,8 +6,6 @@ export async function callClaude(prompt, transcript) {
 }
 
 export async function parseWorkoutWithClaude(transcript, context = {}) {
-  console.log("Raw transcript:", transcript);
-  console.log("Context received:", context);
   try {
     if (!transcript || typeof transcript !== "string") return { error: "Nothing to parse" };
     let text = transcript.toLowerCase().trim();
@@ -30,7 +28,6 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
       if (targetWeight === null || targetReps === null) {
         return { error: "No target values set. Please specify reps and weight." };
       }
-      console.log("Quick completion command detected - using targets");
       return {
         exercise: currentExercise,
         weight: targetWeight,
@@ -60,7 +57,6 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     if (addWeightMatch && lastWeight) {
       const addAmount = parseInt(addWeightMatch[1] || addWeightMatch[3], 10);
       weight = lastWeight + addAmount;
-      console.log("Adding weight:", addAmount, "to", lastWeight, "=", weight);
     }
     
     // Handle "subtract X kilos/kg" or "down to X"
@@ -68,14 +64,12 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     if (subtractWeightMatch && lastWeight) {
       const subAmount = parseInt(subtractWeightMatch[1] || subtractWeightMatch[3], 10);
       weight = Math.max(0, lastWeight - subAmount);
-      console.log("Subtracting weight:", subAmount, "from", lastWeight, "=", weight);
     }
     
     // Find reps
     let repsMatch = text.match(/(\d+)\s*reps?|(\d+)\s*(times|revs|wraps)/);
     if (repsMatch) {
       reps = parseInt(repsMatch[1] || repsMatch[2], 10);
-      console.log("Found reps:", reps);
     }
     
     // Find weight (only if not already set from "add/subtract")
@@ -83,7 +77,6 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
       let weightMatch = text.match(/(\d+)\s*(kg|kgs|kilos?|kilograms?)/);
       if (weightMatch) {
         weight = parseInt(weightMatch[1], 10);
-        console.log("Found weight:", weight);
       }
     }
     
@@ -108,7 +101,6 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     for (const { pattern, name } of exerciseKeywords) {
       if (pattern.test(text)) {
         exercise = name;
-        console.log("Found exercise:", exercise);
         break;
       }
     }
@@ -116,26 +108,20 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     // Apply context fallbacks
     if (!exercise && currentExercise) {
       exercise = currentExercise;
-      console.log("Using current exercise from context:", exercise);
     }
     
     if (!weight && sameWeightMatch && lastWeight) {
       weight = lastWeight;
-      console.log("Using same weight:", weight);
     } else if (!weight && lastWeight) {
       weight = lastWeight;
-      console.log("Using last weight from context:", weight);
     } else if (!weight && targetWeight) {
       weight = targetWeight;
-      console.log("Using target weight from context:", weight);
     }
     
     if (!reps && sameRepsMatch && lastReps) {
       reps = lastReps;
-      console.log("Using same reps:", reps);
     } else if (!reps && targetReps) {
       reps = targetReps;
-      console.log("Using target reps from context:", reps);
     }
     
     // Final validation
@@ -148,10 +134,8 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
       result = { error: "Could not understand, please try again" };
     }
     
-    console.log("Parsed result:", result);
     return result;
   } catch (error) {
-    console.error('Full error:', error);
     return { error: 'Parsing failed' };
   }
 }

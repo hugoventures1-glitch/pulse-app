@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import HomeDashboard from './screens/HomeDashboard';
 import FocusMode from './screens/FocusMode';
@@ -15,8 +15,7 @@ import Progress from './screens/Progress';
 import History from './screens/History';
 import Onboarding from './screens/Onboarding';
 import Settings from './screens/Settings';
-import { WorkoutProvider } from './state/WorkoutContext';
-import DebugPanel from './components/DebugPanel';
+import { WorkoutProvider, useWorkout } from './state/WorkoutContext';
 
 function InnerApp() {
   const [toastMsg, setToastMsg] = useState(null);
@@ -31,6 +30,8 @@ function InnerApp() {
 
   const location = useLocation();
   const navigate = useNavigate();
+  const { isWorkoutActive } = useWorkout();
+  const initialRouteCheckedRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -40,6 +41,23 @@ function InnerApp() {
       }
     } catch(_){}
   }, [location.pathname, navigate]);
+
+  useEffect(() => {
+    if (initialRouteCheckedRef.current) return;
+    if (location.pathname === '/onboarding') return;
+    initialRouteCheckedRef.current = true;
+
+    if (isWorkoutActive) {
+      if (location.pathname !== '/focus') {
+        navigate('/focus', { replace: true });
+      }
+      return;
+    }
+
+    if (location.pathname !== '/') {
+      navigate('/', { replace: true });
+    }
+  }, [isWorkoutActive, location.pathname, navigate]);
 
   return (
     <div className="min-h-full w-full flex justify-center pt-safe pb-safe">
@@ -66,7 +84,6 @@ function InnerApp() {
           <div className="pulse-toast-inner">{toastMsg}</div>
         </div>
       )}
-      <DebugPanel />
     </div>
   );
 }

@@ -5,6 +5,9 @@ import { useWorkout } from '../state/WorkoutContext';
 export default function Settings() {
   const navigate = useNavigate();
   const { prefs, setPrefs } = useWorkout();
+  const restOptions = [30, 60, 90, 120, 150, 180, 210, 240];
+  const [restSelection, setRestSelection] = useState(prefs?.restDuration || 90);
+  const [customRestInput, setCustomRestInput] = useState('');
   
   // Load user profile from localStorage
   const [userProfile, setUserProfile] = useState(null);
@@ -14,6 +17,45 @@ export default function Settings() {
       if (profile) setUserProfile(JSON.parse(profile));
     } catch(_) {}
   }, []);
+
+  useEffect(() => {
+    if (prefs?.restDuration) {
+      setRestSelection(prefs.restDuration);
+    }
+  }, [prefs?.restDuration]);
+
+  const updateRestDuration = (value) => {
+    if (!value || Number.isNaN(value)) return;
+    const sanitized = Math.max(15, Math.min(600, Math.round(value)));
+    setRestSelection(sanitized);
+    setPrefs(prev => ({ ...prev, restDuration: sanitized }));
+
+    setUserProfile(prev => {
+      if (prev) {
+        const nextProfile = { ...prev, restDuration: `${sanitized}s` };
+        try { localStorage.setItem('userProfile', JSON.stringify(nextProfile)); } catch(_) {}
+        return nextProfile;
+      }
+      try {
+        const stored = localStorage.getItem('userProfile');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          parsed.restDuration = `${sanitized}s`;
+          localStorage.setItem('userProfile', JSON.stringify(parsed));
+        }
+      } catch(_) {}
+      return prev;
+    });
+
+    if (window?.__toast) window.__toast(`Default rest set to ${sanitized}s`);
+  };
+
+  const handleCustomRestSubmit = () => {
+    const parsed = parseInt(customRestInput, 10);
+    if (!parsed || parsed <= 0) return;
+    updateRestDuration(parsed);
+    setCustomRestInput('');
+  };
 
   const [showConfirm, setShowConfirm] = useState(null);
 
@@ -75,6 +117,12 @@ export default function Settings() {
             <div className="text-white/70 text-xs mb-1">Training Days/Week</div>
             <div className="text-white font-medium">{userProfile?.days || 'Not set'}</div>
           </div>
+          {userProfile?.customDays?.length > 0 && (
+            <div>
+              <div className="text-white/70 text-xs mb-1">Preferred Schedule</div>
+              <div className="text-white font-medium">{userProfile.customDays.join(', ')}</div>
+            </div>
+          )}
           <div>
             <div className="text-white/70 text-xs mb-1">Experience Level</div>
             <div className="text-white font-medium">{userProfile?.level || 'Not set'}</div>
@@ -99,8 +147,36 @@ export default function Settings() {
               <div className="text-white/70 text-xs mt-1">Default rest duration between sets</div>
             </div>
             <div className="px-3 py-1 rounded-full bg-white/10 text-white text-sm">
-              {prefs?.restDuration || 90}s
+              {restSelection || 90}s
             </div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {restOptions.map(opt => (
+              <button
+                key={opt}
+                onClick={() => updateRestDuration(opt)}
+                className={`h-11 rounded-2xl border text-sm font-medium ${restSelection === opt ? 'bg-white text-slate-900 border-transparent' : 'bg-white/10 text-white border-white/15'}`}
+              >
+                {opt}s
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min="15"
+              max="600"
+              value={customRestInput}
+              onChange={e => setCustomRestInput(e.target.value)}
+              placeholder="Custom seconds"
+              className="flex-1 h-11 rounded-2xl bg-white/10 border border-white/15 px-3 text-white placeholder-white/40 outline-none"
+            />
+            <button
+              onClick={handleCustomRestSubmit}
+              className="h-11 px-4 rounded-2xl bg-white text-slate-900 font-semibold"
+            >
+              Save
+            </button>
           </div>
 
           {/* Units Toggle */}

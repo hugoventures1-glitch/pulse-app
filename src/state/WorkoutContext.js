@@ -48,7 +48,7 @@ export function WorkoutProvider({ children }) {
   const [pausedAt, setPausedAt] = useState(null);
 
   useEffect(() => {
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); console.log('Saved history entries:', history.length); } catch(_){}
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch(_){}
   }, [history]);
 
   // OFFLINE WORK
@@ -60,7 +60,7 @@ export function WorkoutProvider({ children }) {
     } catch(e) { return { restDuration: 90 }; }
   });
   useEffect(() => {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); console.log('Saved prefs', prefs); } catch(_){}
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch(_){}
   }, [prefs]);
 
   // PROGRAM SELECTION
