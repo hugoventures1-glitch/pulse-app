@@ -1,220 +1,497 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useWorkout } from '../state/WorkoutContext';
 
+const GOAL_OPTIONS = ['Strength', 'Hypertrophy', 'Endurance', 'Weight Loss', 'General Fitness'];
+const LEVEL_OPTIONS = ['Beginner', 'Intermediate', 'Advanced'];
+const FREQUENCY_OPTIONS = ['1', '2', '3', '4', '5', '6', '7'];
+const REST_PRESETS = [30, 45, 60, 90, 120, 150, 180, 210, 240, 300];
+const MIN_REST = 30;
+const MAX_REST = 300;
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const parseRestSeconds = (value, fallback) => {
+  if (typeof value === 'number' && !Number.isNaN(value)) {
+    return clamp(value, MIN_REST, MAX_REST);
+  }
+  if (typeof value === 'string') {
+    const numeric = parseInt(value.replace(/[^0-9]/g, ''), 10);
+    if (!Number.isNaN(numeric)) {
+      return clamp(numeric, MIN_REST, MAX_REST);
+    }
+  }
+  if (typeof fallback === 'number' && !Number.isNaN(fallback)) {
+    return clamp(fallback, MIN_REST, MAX_REST);
+  }
+  return clamp(90, MIN_REST, MAX_REST);
+};
+
+const serializeProfile = (profile) => ({
+  ...profile,
+  restDuration: `${profile.restDuration}s`,
+  goals: Array.isArray(profile.goals) ? profile.goals : [],
+  goal: Array.isArray(profile.goals) && profile.goals.length ? profile.goals[0] : '',
+});
+
 export default function Settings() {
-  const navigate = useNavigate();
   const { prefs, setPrefs } = useWorkout();
-  const restOptions = [30, 60, 90, 120, 150, 180, 210, 240];
-  const [restSelection, setRestSelection] = useState(prefs?.restDuration || 90);
-  const [customRestInput, setCustomRestInput] = useState('');
-  
-  // Load user profile from localStorage
   const [userProfile, setUserProfile] = useState(null);
-  useEffect(() => {
+  const [draftProfile, setDraftProfile] = useState(null);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [customRestInput, setCustomRestInput] = useState('');
+  const [showConfirm, setShowConfirm] = useState(null);
+
+  const normalizeProfile = useCallback((raw = {}) => {
+    const goalsArray = Array.isArray(raw.goals)
+      ? raw.goals
+      : raw.goal
+        ? [raw.goal]
+        : [];
+    const restSeconds = parseRestSeconds(raw.restDuration, prefs?.restDuration);
+    return {
+      name: raw.name || '',
+      goals: goalsArray,
+      goal: goalsArray[0] || '',
+      level: raw.level || '',
+      unit: raw.unit || prefs?.units || 'kg',
+      days: raw.days || '',
+      customDays: Array.isArray(raw.customDays) ? raw.customDays : [],
+      restDuration: restSeconds,
+    };
+  }, [prefs?.restDuration, prefs?.units]);
+
+  const persistProfile = useCallback((profile) => {
     try {
-      const profile = localStorage.getItem('userProfile');
-      if (profile) setUserProfile(JSON.parse(profile));
-    } catch(_) {}
+      localStorage.setItem('userProfile', JSON.stringify(serializeProfile(profile)));
+    } catch (_) {}
   }, []);
 
   useEffect(() => {
-    if (prefs?.restDuration) {
-      setRestSelection(prefs.restDuration);
+    try {
+      const stored = localStorage.getItem('userProfile');
+      const rawProfile = stored ? JSON.parse(stored) : {};
+      const normalized = normalizeProfile(rawProfile);
+      setUserProfile(normalized);
+      setDraftProfile(normalized);
+      setIsEditingProfile(false);
+      setCustomRestInput('');
+    } catch (_) {
+      const fallback = normalizeProfile({});
+      setUserProfile(fallback);
+      setDraftProfile(fallback);
+      setIsEditingProfile(false);
+      setCustomRestInput('');
     }
-  }, [prefs?.restDuration]);
+  }, [normalizeProfile]);
 
-  const updateRestDuration = (value) => {
-    if (!value || Number.isNaN(value)) return;
-    const sanitized = Math.max(15, Math.min(600, Math.round(value)));
-    setRestSelection(sanitized);
-    setPrefs(prev => ({ ...prev, restDuration: sanitized }));
-
-    setUserProfile(prev => {
-      if (prev) {
-        const nextProfile = { ...prev, restDuration: `${sanitized}s` };
-        try { localStorage.setItem('userProfile', JSON.stringify(nextProfile)); } catch(_) {}
-        return nextProfile;
-      }
-      try {
-        const stored = localStorage.getItem('userProfile');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          parsed.restDuration = `${sanitized}s`;
-          localStorage.setItem('userProfile', JSON.stringify(parsed));
-        }
-      } catch(_) {}
-      return prev;
-    });
-
-    if (window?.__toast) window.__toast(`Default rest set to ${sanitized}s`);
+  const startEditProfile = () => {
+    if (!userProfile) return;
+    setDraftProfile(userProfile);
+    setIsEditingProfile(true);
   };
+
+  const cancelProfileEdit = () => {
+    setDraftProfile(userProfile);
+    setIsEditingProfile(false);
+  };
+
+  const handleDraftChange = (key, value) => {
+    if (!isEditingProfile) return;
+    setDraftProfile((prev) => ({ ...(prev || {}), [key]: value }));
+  };
+
+  const toggleGoal = (goal) => {
+    if (!isEditingProfile) return;
+    setDraftProfile((prev) => {
+      const prevGoals = Array.isArray(prev?.goals) ? prev.goals : [];
+      const nextGoals = prevGoals.includes(goal)
+        ? prevGoals.filter((g) => g !== goal)
+        : [...prevGoals, goal];
+      return {
+        ...(prev || {}),
+        goals: nextGoals,
+        goal: nextGoals[0] || '',
+      };
+    });
+  };
+
+  const handleDaysChange = (days) => {
+    if (!isEditingProfile) return;
+    setDraftProfile((prev) => ({
+      ...(prev || {}),
+      days,
+      customDays: [],
+    }));
+  };
+
+  const handleSaveProfile = () => {
+    if (!draftProfile) return;
+    const goalsArray = Array.isArray(draftProfile.goals) ? draftProfile.goals : [];
+    const nextProfile = {
+      ...draftProfile,
+      name: (draftProfile.name || '').trim(),
+      goals: goalsArray,
+      goal: goalsArray[0] || '',
+      unit: draftProfile.unit || 'kg',
+      days: draftProfile.days || '',
+      restDuration: draftProfile.restDuration || parseRestSeconds(prefs?.restDuration),
+      customDays: Array.isArray(draftProfile.customDays) ? draftProfile.customDays : [],
+    };
+
+    setUserProfile(nextProfile);
+    setDraftProfile(nextProfile);
+    setIsEditingProfile(false);
+
+    setPrefs((prev) => ({ ...prev, units: nextProfile.unit }));
+    persistProfile(nextProfile);
+    if (window?.__toast) window.__toast('Profile updated');
+  };
+
+  const profileForDisplay = userProfile || normalizeProfile({});
+  const profileForEditing = draftProfile || profileForDisplay;
+  const selectedGoals = isEditingProfile ? (profileForEditing.goals || []) : (profileForDisplay.goals || []);
+  const restDisplayValue = profileForDisplay.restDuration || clamp(prefs?.restDuration || 90, MIN_REST, MAX_REST);
+  const weightUnit = profileForDisplay.unit || prefs?.units || 'kg';
+  const voiceEnabled = prefs?.voiceFeedback !== false;
+  const autoAdvanceEnabled = prefs?.autoAdvance !== false;
+
+  const applyUnits = useCallback((unit) => {
+    const normalizedUnit = unit === 'lbs' ? 'lbs' : 'kg';
+    const baseProfile = userProfile || normalizeProfile({});
+    const nextProfile = { ...baseProfile, unit: normalizedUnit };
+    setUserProfile(nextProfile);
+    setDraftProfile((prev) => (prev ? { ...prev, unit: normalizedUnit } : prev));
+    setPrefs((prev) => ({ ...prev, units: normalizedUnit }));
+    persistProfile(nextProfile);
+    if (window?.__toast) window.__toast(`Units set to ${normalizedUnit.toUpperCase()}`);
+  }, [normalizeProfile, persistProfile, setPrefs, userProfile]);
+
+  const applyRestDuration = useCallback((value) => {
+    if (value === undefined || value === null || Number.isNaN(value)) return;
+    const sanitized = clamp(Math.round(value), MIN_REST, MAX_REST);
+    const baseProfile = userProfile || normalizeProfile({});
+    const nextProfile = { ...baseProfile, restDuration: sanitized };
+    setUserProfile(nextProfile);
+    setDraftProfile((prev) => (prev ? { ...prev, restDuration: sanitized } : prev));
+    setPrefs((prev) => ({ ...prev, restDuration: sanitized }));
+    persistProfile(nextProfile);
+    setCustomRestInput('');
+    if (window?.__toast) window.__toast(`Rest timer set to ${sanitized}s`);
+  }, [normalizeProfile, persistProfile, setPrefs, userProfile]);
 
   const handleCustomRestSubmit = () => {
     const parsed = parseInt(customRestInput, 10);
-    if (!parsed || parsed <= 0) return;
-    updateRestDuration(parsed);
+    if (!Number.isNaN(parsed)) {
+      applyRestDuration(parsed);
+    }
     setCustomRestInput('');
   };
 
-  const [showConfirm, setShowConfirm] = useState(null);
+  const toggleVoiceFeedback = () => {
+    setPrefs((prev) => {
+      const nextValue = !(prev?.voiceFeedback !== false);
+      if (window?.__toast) window.__toast(`Voice feedback ${nextValue ? 'enabled' : 'disabled'}`);
+      return { ...prev, voiceFeedback: nextValue };
+    });
+  };
+
+  const toggleAutoAdvance = () => {
+    setPrefs((prev) => {
+      const nextValue = !(prev?.autoAdvance !== false);
+      if (window?.__toast) window.__toast(`Auto-advance ${nextValue ? 'enabled' : 'disabled'}`);
+      return { ...prev, autoAdvance: nextValue };
+    });
+  };
 
   const handleExport = () => {
-    // Placeholder: Export workout data
     if (window.__toast) window.__toast('Export feature coming soon');
   };
 
-  const handleClearHistory = () => {
-    setShowConfirm('clear');
-  };
-
-  const handleReset = () => {
-    setShowConfirm('reset');
-  };
+  const handleClearHistory = () => setShowConfirm('clear');
+  const handleReset = () => setShowConfirm('reset');
 
   const confirmClearHistory = () => {
-    // Placeholder: Clear workout history
     if (window.__toast) window.__toast('Clear history feature coming soon');
     setShowConfirm(null);
   };
 
   const confirmReset = () => {
-    // Placeholder: Reset app
     if (window.__toast) window.__toast('Reset app feature coming soon');
     setShowConfirm(null);
-  };
-
-  const handleEditProfile = () => {
-    // Placeholder: Navigate to edit profile
-    if (window.__toast) window.__toast('Edit profile coming soon');
   };
 
   return (
     <div className="w-full max-w-[375px] px-4 pt-8 pb-28 space-y-6">
       <h1 className="text-white text-3xl font-bold mb-6">Settings</h1>
 
-      {/* User Profile Section */}
       <div className="pulse-glass rounded-3xl p-6 space-y-4">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-2">
           <h2 className="text-white text-xl font-semibold">User Profile</h2>
-          <button
-            onClick={handleEditProfile}
-            className="px-4 h-9 rounded-full bg-white/10 text-white border border-white/15 text-sm"
-          >
-            Edit
-          </button>
+          {isEditingProfile ? (
+            <div className="flex gap-2">
+              <button
+                onClick={cancelProfileEdit}
+                className="px-3 h-9 rounded-full bg-white/10 text-white border border-white/15 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveProfile}
+                className="px-4 h-9 rounded-full bg-emerald-400 text-slate-900 font-semibold text-sm shadow-lg shadow-emerald-500/40"
+              >
+                Save Changes
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={startEditProfile}
+              className="px-4 h-9 rounded-full bg-white/10 text-white border border-white/15 text-sm"
+            >
+              Edit Profile
+            </button>
+          )}
         </div>
+
         <div className="space-y-3">
           <div>
             <div className="text-white/70 text-xs mb-1">Name</div>
-            <div className="text-white font-medium">{userProfile?.name || 'Not set'}</div>
+            {isEditingProfile ? (
+              <input
+                value={profileForEditing?.name || ''}
+                onChange={(e) => handleDraftChange('name', e.target.value)}
+                placeholder="Enter your name"
+                className="mt-1 w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-3 text-white placeholder-white/40 outline-none"
+                autoComplete="off"
+              />
+            ) : (
+              <div className="text-white font-medium">{profileForDisplay?.name || 'Not set'}</div>
+            )}
           </div>
+
           <div>
-            <div className="text-white/70 text-xs mb-1">Fitness Goal</div>
-            <div className="text-white font-medium">{userProfile?.goal || 'Not set'}</div>
+            <div className="text-white/70 text-xs mb-1">Fitness Goals</div>
+            {isEditingProfile ? (
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                {GOAL_OPTIONS.map((goal) => {
+                  const selected = selectedGoals.includes(goal);
+                  return (
+                    <button
+                      key={goal}
+                      onClick={() => toggleGoal(goal)}
+                      className={`h-10 rounded-2xl border text-sm font-medium transition ${
+                        selected
+                          ? 'bg-white text-slate-900 border-transparent'
+                          : 'bg-white/10 text-white border-white/15'
+                      }`}
+                    >
+                      {goal}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-white font-medium">
+                {profileForDisplay?.goals?.length
+                  ? profileForDisplay.goals.join(', ')
+                  : 'Not set'}
+              </div>
+            )}
           </div>
+
           <div>
             <div className="text-white/70 text-xs mb-1">Training Days/Week</div>
-            <div className="text-white font-medium">{userProfile?.days || 'Not set'}</div>
+            {isEditingProfile ? (
+              <select
+                value={profileForEditing?.days || ''}
+                onChange={(e) => handleDaysChange(e.target.value)}
+                className="mt-1 w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-3 text-white text-sm outline-none"
+              >
+                <option value="" disabled>Select frequency</option>
+                {FREQUENCY_OPTIONS.map((day) => (
+                  <option key={day} value={day}>{day}x per week</option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-white font-medium">
+                {profileForDisplay?.days
+                  ? `${profileForDisplay.days}x per week`
+                  : 'Not set'}
+              </div>
+            )}
           </div>
-          {userProfile?.customDays?.length > 0 && (
+
+          {profileForDisplay?.customDays?.length > 0 && !isEditingProfile && (
             <div>
               <div className="text-white/70 text-xs mb-1">Preferred Schedule</div>
-              <div className="text-white font-medium">{userProfile.customDays.join(', ')}</div>
+              <div className="text-white font-medium">{profileForDisplay.customDays.join(', ')}</div>
             </div>
           )}
+
           <div>
             <div className="text-white/70 text-xs mb-1">Experience Level</div>
-            <div className="text-white font-medium">{userProfile?.level || 'Not set'}</div>
+            {isEditingProfile ? (
+              <select
+                value={profileForEditing?.level || ''}
+                onChange={(e) => handleDraftChange('level', e.target.value)}
+                className="mt-1 w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-3 text-white text-sm outline-none"
+              >
+                <option value="" disabled>Select level</option>
+                {LEVEL_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-white font-medium">
+                {profileForDisplay?.level || 'Not set'}
+              </div>
+            )}
           </div>
-          {userProfile?.unit && (
-            <div>
-              <div className="text-white/70 text-xs mb-1">Preferred Units</div>
-              <div className="text-white font-medium">{userProfile.unit}</div>
-            </div>
-          )}
+
+          <div>
+            <div className="text-white/70 text-xs mb-1">Preferred Units</div>
+            {isEditingProfile ? (
+              <div className="flex items-center gap-2 mt-2">
+                {['kg', 'lbs'].map((unit) => (
+                  <button
+                    key={unit}
+                    onClick={() => handleDraftChange('unit', unit)}
+                    className={`flex-1 h-10 rounded-2xl border text-sm font-medium transition ${
+                      (profileForEditing?.unit || 'kg') === unit
+                        ? 'bg-white text-slate-900 border-transparent'
+                        : 'bg-white/10 text-white border-white/15'
+                    }`}
+                  >
+                    {unit.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-white font-medium">{weightUnit.toUpperCase()}</div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* App Settings Section */}
       <div className="pulse-glass rounded-3xl p-6 space-y-4">
         <h2 className="text-white text-xl font-semibold mb-4">App Settings</h2>
         <div className="space-y-4">
-          {/* Rest Timer Default */}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-white font-medium">Default Rest Timer</div>
               <div className="text-white/70 text-xs mt-1">Default rest duration between sets</div>
             </div>
             <div className="px-3 py-1 rounded-full bg-white/10 text-white text-sm">
-              {restSelection || 90}s
+              {restDisplayValue}s
             </div>
           </div>
+
           <div className="grid grid-cols-4 gap-2">
-            {restOptions.map(opt => (
+            {REST_PRESETS.map((opt) => (
               <button
                 key={opt}
-                onClick={() => updateRestDuration(opt)}
-                className={`h-11 rounded-2xl border text-sm font-medium ${restSelection === opt ? 'bg-white text-slate-900 border-transparent' : 'bg-white/10 text-white border-white/15'}`}
+                onClick={() => applyRestDuration(opt)}
+                className={`h-11 rounded-2xl border text-sm font-medium ${
+                  restDisplayValue === opt
+                    ? 'bg-white text-slate-900 border-transparent'
+                    : 'bg-white/10 text-white border-white/15'
+                }`}
               >
                 {opt}s
               </button>
             ))}
           </div>
+
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => applyRestDuration(restDisplayValue - 15)}
+              className="h-11 w-11 rounded-2xl bg-white/10 text-white border border-white/15 text-lg font-semibold"
+            >
+              –
+            </button>
             <input
               type="number"
-              min="15"
-              max="600"
+              min={MIN_REST}
+              max={MAX_REST}
               value={customRestInput}
-              onChange={e => setCustomRestInput(e.target.value)}
+              onChange={(e) => setCustomRestInput(e.target.value)}
               placeholder="Custom seconds"
               className="flex-1 h-11 rounded-2xl bg-white/10 border border-white/15 px-3 text-white placeholder-white/40 outline-none"
             />
             <button
               onClick={handleCustomRestSubmit}
-              className="h-11 px-4 rounded-2xl bg-white text-slate-900 font-semibold"
+              disabled={!customRestInput}
+              className={`h-11 px-4 rounded-2xl bg-white text-slate-900 font-semibold ${
+                !customRestInput ? 'opacity-60 cursor-not-allowed' : ''
+              }`}
             >
-              Save
+              Set
+            </button>
+            <button
+              onClick={() => applyRestDuration(restDisplayValue + 15)}
+              className="h-11 w-11 rounded-2xl bg-white/10 text-white border border-white/15 text-lg font-semibold"
+            >
+              +
             </button>
           </div>
 
-          {/* Units Toggle */}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-white font-medium">Weight Units</div>
               <div className="text-white/70 text-xs mt-1">Display weight in kg or lbs</div>
             </div>
-            <div className="px-3 py-1 rounded-full bg-white/10 text-white text-sm">
-              {prefs?.units || 'kg'}
+            <div className="flex items-center gap-2">
+              {['kg', 'lbs'].map((unit) => (
+                <button
+                  key={unit}
+                  onClick={() => applyUnits(unit)}
+                  className={`px-3 py-1 rounded-full text-sm border ${
+                    unit === weightUnit
+                      ? 'bg-white text-slate-900 border-transparent'
+                      : 'bg-white/10 text-white border-white/15'
+                  }`}
+                >
+                  {unit.toUpperCase()}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Voice Feedback Toggle */}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-white font-medium">Voice Feedback</div>
               <div className="text-white/70 text-xs mt-1">Audio confirmation after logging sets</div>
             </div>
-            <div className="px-3 py-1 rounded-full bg-white/10 text-white text-sm">
-              {prefs?.voiceFeedback !== false ? 'On' : 'Off'}
-            </div>
+            <button
+              onClick={toggleVoiceFeedback}
+              className={`px-3 py-1 rounded-full text-sm border ${
+                voiceEnabled
+                  ? 'bg-white text-slate-900 border-transparent'
+                  : 'bg-white/10 text-white border-white/15'
+              }`}
+            >
+              {voiceEnabled ? 'On' : 'Off'}
+            </button>
           </div>
 
-          {/* Auto-advance Exercise */}
           <div className="flex items-center justify-between">
             <div>
               <div className="text-white font-medium">Auto-advance Exercise</div>
               <div className="text-white/70 text-xs mt-1">Automatically move to next exercise</div>
             </div>
-            <div className="px-3 py-1 rounded-full bg-white/10 text-white text-sm">
-              {prefs?.autoAdvance !== false ? 'On' : 'Off'}
-            </div>
+            <button
+              onClick={toggleAutoAdvance}
+              className={`px-3 py-1 rounded-full text-sm border ${
+                autoAdvanceEnabled
+                  ? 'bg-white text-slate-900 border-transparent'
+                  : 'bg-white/10 text-white border-white/15'
+              }`}
+            >
+              {autoAdvanceEnabled ? 'On' : 'Off'}
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Data Management Section */}
       <div className="pulse-glass rounded-3xl p-6 space-y-4">
         <h2 className="text-white text-xl font-semibold mb-4">Data Management</h2>
         <div className="space-y-3">
@@ -239,7 +516,6 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* About Section */}
       <div className="pulse-glass rounded-3xl p-6 space-y-4">
         <h2 className="text-white text-xl font-semibold mb-4">About</h2>
         <div className="space-y-3 text-white/80 text-sm">
@@ -249,7 +525,6 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* Confirmation Modals */}
       {showConfirm === 'clear' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowConfirm(null)} />
@@ -300,4 +575,3 @@ export default function Settings() {
     </div>
   );
 }
-
