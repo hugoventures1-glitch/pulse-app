@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
 
 function ProgressRing({ percent = 65, size = 130, strokeWidth = 12 }) {
@@ -21,8 +22,17 @@ function ProgressRing({ percent = 65, size = 130, strokeWidth = 12 }) {
   );
 }
 
+const formatPreview = (exercises = []) => {
+  const names = exercises.map((exercise) => exercise.name);
+  if (names.length <= 3) return names.join(', ');
+  return `${names.slice(0, 3).join(', ')}...`;
+};
+
+const countSets = (exercises = []) => exercises.reduce((sum, exercise) => sum + (exercise.sets?.length || exercise.setTargets?.length || exercise.setsCount || 0), 0);
+
 export default function HomeDashboard() {
-  const { history = [] } = useWorkout();
+  const { history = [], savedWorkouts = [], startWorkoutFromTemplate } = useWorkout();
+  const navigate = useNavigate();
 
   // Get user profile from localStorage
   const userProfile = useMemo(() => {
@@ -35,6 +45,12 @@ export default function HomeDashboard() {
   }, []);
 
   const userName = userProfile?.name || null;
+
+  const featuredWorkouts = useMemo(() => {
+    return [...savedWorkouts]
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+      .slice(0, 3);
+  }, [savedWorkouts]);
 
   // Calculate stats from history
   const stats = useMemo(() => {
@@ -260,6 +276,54 @@ export default function HomeDashboard() {
           )}
         </div>
       </div>
+
+      {/* My Workouts */}
+      {featuredWorkouts.length > 0 && (
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-white text-lg font-bold">My Workouts</div>
+            <button
+              onClick={() => navigate('/my-workouts')}
+              className="text-cyan-300 text-xs font-semibold"
+            >
+              View All
+            </button>
+          </div>
+          <div className="space-y-3">
+            {featuredWorkouts.map((workout) => {
+              const exercises = workout.exercises || [];
+              const preview = formatPreview(exercises);
+              const sets = countSets(exercises);
+              return (
+                <div key={workout.id} className="pulse-glass rounded-2xl p-4 border border-white/10">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-white text-base font-semibold">{workout.name}</div>
+                      <div className="text-white/60 text-xs mt-1">
+                        {exercises.length} exercise{exercises.length !== 1 ? 's' : ''} • {sets} set{sets !== 1 ? 's' : ''}
+                      </div>
+                      <div className="text-white/60 text-xs mt-2">{preview}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (startWorkoutFromTemplate(workout.id)) {
+                          if (window?.__toast) window.__toast('Workout loaded');
+                          navigate('/focus');
+                        } else if (window?.__toast) {
+                          window.__toast('Workout could not be loaded');
+                        }
+                      }}
+                      className="px-3 h-9 rounded-full bg-white text-slate-900 text-xs font-semibold"
+                    >
+                      Start
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Recent Activity */}
       <div className="mb-5">

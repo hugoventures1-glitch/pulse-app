@@ -2,6 +2,9 @@ import React, { createContext, useContext, useMemo, useState } from 'react';
 import { useCallback, useEffect } from 'react';
 import { WORKOUT_PROGRAMS } from '../data/workoutPrograms';
 
+const CUSTOM_PROGRAMS_KEY = 'pulseCustomPrograms';
+const SAVED_WORKOUTS_KEY = 'pulseSavedWorkouts';
+
 const WorkoutContext = createContext(null);
 
 const PLAN_KEY = 'pulsePlan';
@@ -63,6 +66,30 @@ export function WorkoutProvider({ children }) {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch(_){}
   }, [prefs]);
 
+  const [customPrograms, setCustomPrograms] = useState(() => {
+    try {
+      const stored = localStorage.getItem(CUSTOM_PROGRAMS_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch (_) {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(CUSTOM_PROGRAMS_KEY, JSON.stringify(customPrograms)); } catch(_){ }
+  }, [customPrograms]);
+
+  const [savedWorkouts, setSavedWorkouts] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SAVED_WORKOUTS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch (_) {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SAVED_WORKOUTS_KEY, JSON.stringify(savedWorkouts)); } catch(_){ }
+  }, [savedWorkouts]);
+
   // PROGRAM SELECTION
   const [selectedProgramId, setSelectedProgramId] = useState(() => {
     try {
@@ -77,26 +104,54 @@ export function WorkoutProvider({ children }) {
     } catch(_) { return null; }
   });
 
+  const getBaseProgram = useCallback((programId) => {
+    return WORKOUT_PROGRAMS.find(p => p.id === programId) || null;
+  }, []);
+
+  const getProgramDefinition = useCallback((programId) => {
+    if (!programId) return null;
+    const base = getBaseProgram(programId);
+    if (!base) return null;
+    const custom = customPrograms[programId];
+    if (!custom) return base;
+    return { ...custom, id: programId };
+  }, [customPrograms, getBaseProgram]);
+
+  const buildPlanFromTemplate = useCallback((template) => {
+    if (!template || !Array.isArray(template.exercises)) return [];
+    return template.exercises.map((exercise) => {
+      const setTargets = exercise.setTargets || exercise.sets || [];
+      const first = setTargets[0] || { reps: exercise.reps || 0, weight: exercise.weight || 0 };
+      return {
+        name: exercise.name,
+        sets: setTargets.length || exercise.setsCount || 0,
+        reps: first.reps || exercise.reps || 0,
+        weight: first.weight || exercise.weight || 0,
+        setTargets,
+      };
+    });
+  }, []);
+
   // Calculate current day based on start date
   const getCurrentDayIndex = useCallback(() => {
     if (!selectedProgramId || !programStartDate) return 0;
-    const program = WORKOUT_PROGRAMS.find(p => p.id === selectedProgramId);
-    if (!program) return 0;
-    
+    const program = getProgramDefinition(selectedProgramId);
+    if (!program || !program.days || program.days.length === 0) return 0;
+
     const start = new Date(programStartDate);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     start.setHours(0, 0, 0, 0);
-    
+
     const daysSinceStart = Math.floor((today - start) / (1000 * 60 * 60 * 24));
     return daysSinceStart % program.days.length;
-  }, [selectedProgramId, programStartDate]);
+  }, [selectedProgramId, programStartDate, getProgramDefinition]);
 
   // Update workout plan when program day changes
   useEffect(() => {
     if (!selectedProgramId) return;
     
-    const program = WORKOUT_PROGRAMS.find(p => p.id === selectedProgramId);
+    const program = getProgramDefinition(selectedProgramId);
     if (!program) return;
     
     const dayIndex = getCurrentDayIndex();
@@ -104,20 +159,22 @@ export function WorkoutProvider({ children }) {
     
     if (currentDay) {
       setWorkoutPlan(currentDay.exercises);
-      console.log(`Updated workout plan for ${program.name} - Day ${dayIndex + 1}: ${currentDay.name}`);
     }
-  }, [selectedProgramId, programStartDate, getCurrentDayIndex]);
+  }, [selectedProgramId, programStartDate, getCurrentDayIndex, getProgramDefinition]);
 
-  const selectProgram = useCallback((program) => {
-    setSelectedProgramId(program.id);
-    setProgramStartDate(new Date().toISOString());
-    const dayIndex = 0; // Start with first day
-    setWorkoutPlan(program.days[dayIndex].exercises);
+  const selectProgram = useCallback((programId) => {
+    const program = getProgramDefinition(programId);
+    if (!program) return;
+    const startStamp = new Date().toISOString();
+    setSelectedProgramId(programId);
+    setProgramStartDate(startStamp);
+    const dayIndex = 0;
+    setWorkoutPlan(program.days?.[dayIndex]?.exercises || []);
     try {
-      localStorage.setItem(PROGRAM_KEY, program.id);
-      localStorage.setItem(PROGRAM_START_DATE_KEY, new Date().toISOString());
+      localStorage.setItem(PROGRAM_KEY, programId);
+      localStorage.setItem(PROGRAM_START_DATE_KEY, startStamp);
     } catch(_) {}
-  }, []);
+  }, [getProgramDefinition]);
 
   useEffect(() => {
     try {
@@ -322,6 +379,53 @@ export function WorkoutProvider({ children }) {
   // Compute workout active state - always returns boolean
   const isWorkoutActive = workoutStartAt !== null;
 
+  const saveCustomProgram = useCallback((programId, programData) => {
+    setCustomPrograms((prev) => ({ ...prev, [programId]: JSON.parse(JSON.stringify(programData)) }));
+  }, []);
+
+  const resetCustomProgram = useCallback((programId) => {
+    setCustomPrograms((prev) => {
+      if (!prev[programId]) return prev;
+      const next = { ...prev };
+      delete next[programId];
+      return next;
+    });
+  }, []);
+
+  const saveCustomWorkoutTemplate = useCallback((workout) => {
+    setSavedWorkouts((prev) => {
+      const next = [...prev];
+      const now = new Date().toISOString();
+      if (workout.id) {
+        const idx = next.findIndex((item) => item.id === workout.id);
+        if (idx !== -1) {
+          next[idx] = { ...next[idx], ...workout, updatedAt: now };
+        } else {
+          next.unshift({ ...workout, id: workout.id, createdAt: now, updatedAt: now });
+        }
+      } else {
+        const id = `cw-${Date.now()}`;
+        next.unshift({ ...workout, id, createdAt: now, updatedAt: now });
+      }
+      return next.slice(0, 50);
+    });
+  }, []);
+
+  const deleteCustomWorkoutTemplate = useCallback((workoutId) => {
+    setSavedWorkouts((prev) => prev.filter((item) => item.id !== workoutId));
+  }, []);
+
+  const getSavedWorkoutById = useCallback((workoutId) => savedWorkouts.find((item) => item.id === workoutId) || null, [savedWorkouts]);
+
+  const startWorkoutFromTemplate = useCallback((workoutId) => {
+    const template = savedWorkouts.find((item) => item.id === workoutId);
+    if (!template) return false;
+    const plan = buildPlanFromTemplate(template);
+    if (!plan.length) return false;
+    setWorkoutPlan(plan);
+    return true;
+  }, [savedWorkouts, buildPlanFromTemplate]);
+
   // Expose helpers
   const value = useMemo(() => ({
     logs, addLog,
@@ -350,7 +454,11 @@ export function WorkoutProvider({ children }) {
     // Program selection
     selectedProgramId,
     selectProgram,
-    getCurrentDayIndex,
+    getProgramDefinition,
+    getBaseProgram,
+    customPrograms,
+    saveCustomProgram,
+    resetCustomProgram,
     // Paused global
     isPaused,
     pauseWorkout,
@@ -359,7 +467,14 @@ export function WorkoutProvider({ children }) {
     // Workout active state
     isWorkoutActive,
     endWorkout,
-  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout]);
+    customPrograms,
+    savedWorkouts,
+    saveCustomWorkoutTemplate,
+    deleteCustomWorkoutTemplate,
+    getSavedWorkoutById,
+    startWorkoutFromTemplate,
+    buildPlanFromTemplate,
+  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout, getProgramDefinition, getBaseProgram, customPrograms, saveCustomProgram, resetCustomProgram, savedWorkouts, saveCustomWorkoutTemplate, deleteCustomWorkoutTemplate, getSavedWorkoutById, startWorkoutFromTemplate, buildPlanFromTemplate]);
 
   return (
     <WorkoutContext.Provider value={value}>{children}</WorkoutContext.Provider>

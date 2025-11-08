@@ -11,6 +11,8 @@ import WorkoutSummary from './screens/WorkoutSummary';
 import WorkoutDetails from './screens/WorkoutDetails';
 import CreateCustomWorkout from './screens/CreateCustomWorkout';
 import ChooseProgram from './screens/ChooseProgram';
+import CustomizeProgram from './screens/CustomizeProgram';
+import SavedWorkouts from './screens/SavedWorkouts';
 import Progress from './screens/Progress';
 import History from './screens/History';
 import Onboarding from './screens/Onboarding';
@@ -73,6 +75,8 @@ function InnerApp() {
         <Route path="/workout-details" element={<WorkoutDetails />} />
         <Route path="/create-custom" element={<CreateCustomWorkout />} />
         <Route path="/choose-program" element={<ChooseProgram />} />
+        <Route path="/my-workouts" element={<SavedWorkouts />} />
+        <Route path="/customize-program" element={<CustomizeProgram />} />
         <Route path="/progress" element={<Progress />} />
         <Route path="/history" element={<History />} />
         <Route path="/settings" element={<Settings />} />

@@ -150,6 +150,13 @@ export default function FocusMode() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  const [pendingConfirmation, setPendingConfirmation] = useState(null);
+  const [pendingEditValues, setPendingEditValues] = useState(null);
+  const [pendingEditMode, setPendingEditMode] = useState(false);
+  const [recentLog, setRecentLog] = useState(null);
+  const pendingTimeoutRef = useRef(null);
+  const recentToastRef = useRef(null);
+  const lastLoggedSetRef = useRef(null);
   const quickDurations = useMemo(() => {
     const base = [60, 90, 120, 180];
     const pref = Number(prefs?.restDuration);
@@ -172,7 +179,8 @@ export default function FocusMode() {
     navigate,
     restDuration,
     startRest,
-    currentPlanIdx
+    currentPlanIdx,
+    lastLoggedSet: lastLoggedSetRef,
   });
   
   // Update ref when values change (but don't trigger re-render)
@@ -189,7 +197,8 @@ export default function FocusMode() {
       navigate,
       restDuration,
       startRest,
-      currentPlanIdx
+      currentPlanIdx,
+      lastLoggedSet: lastLoggedSetRef,
     };
   }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest, currentPlanIdx]);
 
@@ -228,7 +237,10 @@ export default function FocusMode() {
             }
           }
 
-          const result = await parseWorkoutWithClaude(normalizedTranscript, context);
+          const result = await parseWorkoutWithClaude(normalizedTranscript, {
+            ...context,
+            lastLoggedSet: callbacks.lastLoggedSet?.current || null,
+          });
           if (result.error) {
             setError(result.error);
             return;
@@ -236,62 +248,24 @@ export default function FocusMode() {
 
           setAiParsed(result);
 
-          if (callbacks.isQuickStart) {
-            if (result.exercise) {
-              callbacks.addAdditionalExercise({ ...result, complete: true });
-              if (result.isQuickComplete) {
-                speakMessage(`Set logged. ${result.exercise}, ${result.reps} reps at ${result.weight} kg.`);
-              } else {
-                speakMessage('Set logged');
-              }
-              setCelebrateSet(true); playSuccessTone();
-              setTimeout(() => setCelebrateSet(false), 700);
-              callbacks.startRest(callbacks.restDuration, result.exercise);
+          const needsConfirmation = result.needsConfirmation && result.needsConfirmation.length > 0;
+          if (needsConfirmation) {
+            setPendingConfirmation({ result, isQuickStart: callbacks.isQuickStart });
+            setPendingEditValues({
+              reps: result.reps || '',
+              weight: result.isBodyweight ? 'bodyweight' : (result.weight ?? ''),
+            });
+            setPendingEditMode(false);
+            if (needsConfirmation) {
+              const reasons = (result.needsConfirmation || []).join(', ');
+              setError('Need confirmation: ' + reasons.replace(/_/g, ' '));
             }
+            speakMessage('Please confirm');
             return;
           }
 
-          const planNames = callbacks.workoutPlan.map(e => e.name.toLowerCase());
-          const idx = planNames.indexOf((result.exercise || '').toLowerCase());
-          if (idx !== -1) {
-            const exName = callbacks.workoutPlan[idx].name;
-            const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
-            const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
-            const nextProgress = Math.min(prevProgress + 1, setsInPlan);
+          handleConfirmedResult(result);
 
-            callbacks.logSetCompletion({ exercise: exName, reps: result.reps, weight: result.weight, sets: setsInPlan });
-
-            const confirmMsg = result.isQuickComplete
-              ? `Set logged. ${exName}, ${result.reps} reps at ${result.weight} kg.`
-              : `Logged. ${exName}, ${result.reps} reps at ${result.weight} kg. ${setsInPlan - nextProgress} sets remaining.`;
-            speakMessage(confirmMsg);
-
-            callbacks.startRest(callbacks.restDuration, exName);
-            setCelebrateSet(true); playSuccessTone();
-            setTimeout(() => setCelebrateSet(false), 700);
-
-            if (nextProgress >= setsInPlan) {
-              callbacks.markExerciseComplete(exName, setsInPlan);
-              const nextEx = callbacks.workoutPlan[idx + 1]?.name;
-              setCelebrateComplete(true);
-              const parts = Array.from({ length: 24 }).map((_, i) => ({
-                id: i,
-                color: ['#22c55e', '#7c3aed', '#06b6d4', '#f59e0b'][i % 4],
-                dx: (Math.random() * 160 - 80) + 'px',
-                dy: (Math.random() * -140 - 40) + 'px'
-              }));
-              setConfetti(parts);
-              setTimeout(() => { setCelebrateComplete(false); setConfetti([]); }, 1200);
-              setTimeout(() => {
-                callbacks.nextExerciseIdx();
-                if (!nextEx) {
-                  callbacks.navigate('/summary');
-                }
-              }, 900);
-            }
-          } else if (result.exercise) {
-            callbacks.addAdditionalExercise({ ...result, complete: true });
-          }
         } catch (e) {
           setError("AI parsing failed, try again");
           setAiParsed(null);
@@ -315,6 +289,122 @@ export default function FocusMode() {
       } catch (_) {}
     };
   }, []); // Empty dependency array - only run on mount/unmount
+
+  const handleConfirmedResult = (result) => {
+    const callbacks = callbacksRef.current;
+
+    if (callbacks.isQuickStart) {
+      if (result.exercise) {
+        callbacks.addAdditionalExercise({ ...result, complete: true });
+        speakMessage('Logged');
+        setCelebrateSet(true); playSuccessTone();
+        setTimeout(()=> setCelebrateSet(false), 700);
+        callbacks.startRest(callbacks.restDuration, result.exercise);
+      }
+    } else {
+      const planNames = callbacks.workoutPlan.map(e => e.name.toLowerCase());
+      const idx = planNames.indexOf((result.exercise||'').toLowerCase());
+      if (idx !== -1) {
+        const exName = callbacks.workoutPlan[idx].name;
+        const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
+        const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
+        const nextProgress = Math.min(prevProgress + 1, setsInPlan);
+        callbacks.logSetCompletion({ exercise: exName, reps: result.reps || 0, weight: result.isBodyweight ? 0 : (result.weight ?? 0), sets: setsInPlan });
+        speakMessage('Logged');
+        callbacks.startRest(callbacks.restDuration, exName);
+        setCelebrateSet(true); playSuccessTone();
+        setTimeout(()=> setCelebrateSet(false), 700);
+        if (nextProgress >= setsInPlan) {
+          callbacks.markExerciseComplete(exName, setsInPlan);
+          const nextEx = callbacks.workoutPlan[idx + 1]?.name;
+          setCelebrateComplete(true);
+          const parts = Array.from({length: 24}).map((_,i)=>({
+            id: i,
+            color: ['#22c55e','#7c3aed','#06b6d4','#f59e0b'][i%4],
+            dx: (Math.random()*160-80)+ 'px',
+            dy: (Math.random()*-140-40)+ 'px'
+          }));
+          setConfetti(parts);
+          setTimeout(()=>{ setCelebrateComplete(false); setConfetti([]); }, 1200);
+          setTimeout(() => {
+            callbacks.nextExerciseIdx();
+            if (!nextEx) {
+              callbacks.navigate('/summary');
+            }
+          }, 900);
+        }
+      } else if(result.exercise) {
+        callbacks.addAdditionalExercise({ ...result, complete: true });
+      }
+    }
+
+    setPendingConfirmation(null);
+    setPendingEditValues(null);
+    setError('');
+
+    const summaryWeight = result.isBodyweight ? 'bodyweight' : `${result.weight ?? '?'} kg`;
+    setRecentLog({
+      exercise: result.exercise,
+      reps: result.reps ?? '?',
+      weight: summaryWeight,
+    });
+    if (recentToastRef.current) clearTimeout(recentToastRef.current);
+    recentToastRef.current = setTimeout(() => setRecentLog(null), 2000);
+
+    if (result.exercise) {
+      lastLoggedSetRef.current = {
+        exercise: result.exercise,
+        weight: result.isBodyweight ? 0 : (result.weight ?? 0),
+        reps: result.reps ?? 0,
+      };
+      console.log('Updated lastLoggedSet', lastLoggedSetRef.current);
+    }
+  };
+
+  const handleConfirmPending = () => {
+    if (!pendingConfirmation) return;
+    const confirmedResult = {
+      ...pendingConfirmation.result,
+      reps: pendingEditValues?.reps ? Number(pendingEditValues.reps) : pendingConfirmation.result.reps,
+      weight: pendingConfirmation.result.isBodyweight
+        ? 0
+        : pendingEditValues?.weight === 'bodyweight'
+          ? 0
+          : (pendingEditValues?.weight !== undefined && pendingEditValues?.weight !== null && pendingEditValues?.weight !== ''
+            ? Number(pendingEditValues.weight) : pendingConfirmation.result.weight),
+    };
+    handleConfirmedResult(confirmedResult);
+  };
+
+  const handleEditPending = (field, value) => {
+    setPendingEditValues((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleCancelPending = () => {
+    setPendingConfirmation(null);
+    setPendingEditValues(null);
+    setPendingEditMode(false);
+    setError('Could not confirm. Please repeat the command.');
+  };
+
+  useEffect(() => {
+    if (pendingConfirmation && !pendingEditMode) {
+      if (pendingTimeoutRef.current) clearTimeout(pendingTimeoutRef.current);
+      pendingTimeoutRef.current = setTimeout(() => {
+        handleConfirmPending();
+      }, 3000);
+    } else if (pendingTimeoutRef.current) {
+      clearTimeout(pendingTimeoutRef.current);
+      pendingTimeoutRef.current = null;
+    }
+    return () => {
+      if (pendingTimeoutRef.current) {
+        clearTimeout(pendingTimeoutRef.current);
+        pendingTimeoutRef.current = null;
+      }
+    };
+  }, [pendingConfirmation, pendingEditMode]);
+
   return (
     <div className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-center relative">
       {/* Offline/Online Status Indicator */}
@@ -563,6 +653,103 @@ export default function FocusMode() {
         </div>
       )}
 
+      {pendingConfirmation && (
+        <div className="fixed inset-x-0 bottom-24 z-50 px-4">
+          <div className="pulse-glass rounded-2xl p-4 border border-white/20 shadow-xl">
+            <div className="text-white text-sm font-semibold">
+              {pendingConfirmation.result.exercise}
+            </div>
+            <div className="text-white/70 text-xs mt-1">
+              {pendingEditValues?.reps || pendingConfirmation.result.reps || '?'} reps · {pendingConfirmation.result.isBodyweight ? 'bodyweight' : `${pendingEditValues?.weight || pendingConfirmation.result.weight || '?'} kg`}
+            </div>
+            {pendingConfirmation.result.needsConfirmation?.length > 0 && (
+              <div className="text-amber-300 text-[10px] mt-2 uppercase tracking-wide">
+                {pendingConfirmation.result.needsConfirmation.map((reason) => reason.replace(/_/g, ' ')).join(', ')}
+              </div>
+            )}
+            {pendingEditMode ? (
+              <div className="mt-3 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-white/60 text-[10px] uppercase block mb-1">Reps</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={pendingEditValues?.reps ?? ''}
+                      onChange={(e) => handleEditPending('reps', e.target.value)}
+                      className="w-full h-9 rounded-xl bg-white/10 border border-white/20 px-3 text-white text-center outline-none"
+                    />
+                  </div>
+                  {!pendingConfirmation.result.isBodyweight && (
+                    <div>
+                      <label className="text-white/60 text-[10px] uppercase block mb-1">Weight (kg)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="500"
+                        value={pendingEditValues?.weight ?? ''}
+                        onChange={(e) => handleEditPending('weight', e.target.value)}
+                        className="w-full h-9 rounded-xl bg-white/10 border border-white/20 px-3 text-white text-center outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPendingEditMode(false)}
+                    className="flex-1 h-9 rounded-full bg-white/10 text-white border border-white/20 text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmPending}
+                    className="flex-1 h-9 rounded-full bg-emerald-400 text-slate-900 text-xs font-semibold"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={() => {
+                    const defaultReps = pendingEditValues?.reps ?? pendingConfirmation.result.reps ?? '';
+                    const defaultWeight = pendingConfirmation.result.isBodyweight
+                      ? ''
+                      : (pendingEditValues?.weight === 'bodyweight' ? '' : (pendingEditValues?.weight ?? pendingConfirmation.result.weight ?? ''));
+                    setPendingEditValues({ reps: defaultReps, weight: defaultWeight });
+                    setPendingEditMode(true);
+                  }}
+                  className="flex-1 h-9 rounded-full bg-white/10 text-white border border-white/20 text-xs"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={handleConfirmPending}
+                  className="flex-1 h-9 rounded-full bg-emerald-400 text-slate-900 text-xs font-semibold"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={handleCancelPending}
+                  className="h-9 px-3 rounded-full bg-white/10 text-white border border-white/20 text-xs"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {recentLog && (
+        <div className="fixed inset-x-0 top-16 z-40 px-4">
+          <div className="pulse-glass rounded-2xl px-4 py-3 border border-emerald-400/40 bg-emerald-400/15 text-white text-sm shadow-lg">
+            Logged: {recentLog.exercise} • {recentLog.reps} reps • {recentLog.weight}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

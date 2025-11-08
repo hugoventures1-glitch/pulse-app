@@ -1,6 +1,8 @@
 // Claude Sonnet API utility -- DISABLED: @anthropic-ai/sdk removed
 // You must implement actual Claude integration elsewhere
 
+import { EXERCISE_ALIAS_MAP, BODYWEIGHT_EXERCISES } from '../data/exerciseLibrary';
+
 export async function callClaude(prompt, transcript) {
   throw new Error('Anthropic integration is disabled: @anthropic-ai/sdk has been removed.');
 }
@@ -8,18 +10,24 @@ export async function callClaude(prompt, transcript) {
 export async function parseWorkoutWithClaude(transcript, context = {}) {
   try {
     if (!transcript || typeof transcript !== "string") return { error: "Nothing to parse" };
-    let text = transcript.toLowerCase().trim();
-    
-    // Extract context values
+    const rawText = transcript.trim();
+    let text = rawText.toLowerCase();
+    const normalizedText = ` ${text} `;
+
     const currentExercise = context.currentExercise || null;
     const lastWeight = context.lastWeight || null;
     const lastReps = context.lastReps || null;
     const targetWeight = context.targetWeight || null;
     const targetReps = context.targetReps || null;
-    
-    let reps, weight, exercise;
-    
-    // Quick completion commands - use target values
+    const lastLoggedSet = context.lastLoggedSet || null;
+
+    let reps;
+    let weight;
+    let exercise;
+
+    const notes = [];
+    const needsConfirmation = [];
+
     const completionWords = /^(done|completed|finished|got it|complete|finish)$/;
     if (completionWords.test(text)) {
       if (!currentExercise) {
@@ -33,109 +41,179 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
         weight: targetWeight,
         reps: targetReps,
         sets: 1,
-        isQuickComplete: true // Flag to indicate this was a quick completion
+        isQuickComplete: true,
+        rawText,
+        needsConfirmation: [],
       };
     }
-    
-    // Handle "same weight", "same reps", "one more", "another set"
-    const sameWeightMatch = text.match(/same\s+weight|same\s+kg|same\s+kilos/);
+
+    const sameWeightMatch = text.match(/same\s+weight/);
     const sameRepsMatch = text.match(/same\s+reps/);
-    const oneMoreMatch = text.match(/one\s+more|another\s+set|repeat/);
-    
-    if (oneMoreMatch && lastWeight && lastReps && currentExercise) {
-      // Repeat last set exactly
-      return {
-        exercise: currentExercise,
-        weight: lastWeight,
-        reps: lastReps,
-        sets: 1
-      };
+    const repeatAllMatch = text.match(/same as before|repeat|again\b|^same$/);
+    const memoryKeywordsDetected = [];
+
+    if (repeatAllMatch) memoryKeywordsDetected.push('same_all');
+    if (sameWeightMatch) memoryKeywordsDetected.push('same_weight');
+    if (sameRepsMatch) memoryKeywordsDetected.push('same_reps');
+
+    if (memoryKeywordsDetected.length > 0) {
+      console.log('Memory keywords detected:', memoryKeywordsDetected.join(', '));
     }
-    
-    // Handle "add X kilos/kg" or "up to X"
+
     const addWeightMatch = text.match(/add\s+(\d+)\s*(kg|kgs|kilos?|kilograms?)|up\s+to\s+(\d+)\s*(kg|kgs|kilos?|kilograms?)/);
-    if (addWeightMatch && lastWeight) {
+    if (addWeightMatch && lastWeight !== null && lastWeight !== undefined) {
       const addAmount = parseInt(addWeightMatch[1] || addWeightMatch[3], 10);
       weight = lastWeight + addAmount;
     }
-    
-    // Handle "subtract X kilos/kg" or "down to X"
+
     const subtractWeightMatch = text.match(/subtract\s+(\d+)\s*(kg|kgs|kilos?|kilograms?)|down\s+to\s+(\d+)\s*(kg|kgs|kilos?|kilograms?)/);
-    if (subtractWeightMatch && lastWeight) {
+    if (subtractWeightMatch && lastWeight !== null && lastWeight !== undefined) {
       const subAmount = parseInt(subtractWeightMatch[1] || subtractWeightMatch[3], 10);
       weight = Math.max(0, lastWeight - subAmount);
     }
-    
-    // Find reps
-    let repsMatch = text.match(/(\d+)\s*reps?|(\d+)\s*(times|revs|wraps)/);
+
+    const repsMatch = text.match(/(\d+)\s*reps?|(\d+)\s*(times|revs|wraps)/);
     if (repsMatch) {
       reps = parseInt(repsMatch[1] || repsMatch[2], 10);
     }
-    
-    // Find weight (only if not already set from "add/subtract")
-    if (!weight) {
-      let weightMatch = text.match(/(\d+)\s*(kg|kgs|kilos?|kilograms?)/);
+
+    if (weight === undefined) {
+      const weightMatch = text.match(/(\d+)\s*(kg|kgs|kilos?|kilograms?)/);
       if (weightMatch) {
         weight = parseInt(weightMatch[1], 10);
       }
     }
-    
-    // Find exercise name (fuzzy match against common exercises)
-    const exerciseKeywords = [
-      { pattern: /bench|press/, name: 'Bench Press' },
-      { pattern: /squat/, name: 'Squat' },
-      { pattern: /deadlift/, name: 'Deadlift' },
-      { pattern: /shoulder|overhead|ohp/, name: 'Shoulder Press' },
-      { pattern: /row/, name: 'Barbell Rows' },
-      { pattern: /pull.?up/, name: 'Pull-ups' },
-      { pattern: /curl/, name: 'Bicep Curls' },
-      { pattern: /tricep|dip/, name: 'Tricep Extensions' },
-      { pattern: /leg\s+press/, name: 'Leg Press' },
-      { pattern: /leg\s+curl/, name: 'Leg Curls' },
-      { pattern: /calf/, name: 'Calf Raises' },
-      { pattern: /lateral/, name: 'Lateral Raises' },
-      { pattern: /lunges?/, name: 'Lunges' },
-      { pattern: /face\s+pull/, name: 'Face Pulls' }
-    ];
-    
-    for (const { pattern, name } of exerciseKeywords) {
-      if (pattern.test(text)) {
-        exercise = name;
-        break;
+
+    if (!exercise) {
+      for (const [alias, canonical] of EXERCISE_ALIAS_MAP.entries()) {
+        const needle = ` ${alias} `;
+        if (normalizedText.includes(needle) || normalizedText.endsWith(alias) || normalizedText.startsWith(`${alias} `)) {
+          exercise = canonical;
+          break;
+        }
       }
     }
-    
-    // Apply context fallbacks
-    if (!exercise && currentExercise) {
-      exercise = currentExercise;
+
+    const hasMemory = memoryKeywordsDetected.length > 0;
+
+    if (!exercise) {
+      if (hasMemory && lastLoggedSet?.exercise) {
+        exercise = lastLoggedSet.exercise;
+        notes.push('used_last_exercise');
+      } else if (currentExercise) {
+        exercise = currentExercise;
+        notes.push('used_current_exercise');
+      }
     }
-    
-    if (!weight && sameWeightMatch && lastWeight) {
-      weight = lastWeight;
-    } else if (!weight && lastWeight) {
-      weight = lastWeight;
-    } else if (!weight && targetWeight) {
-      weight = targetWeight;
+
+    if (!exercise) {
+      return { error: 'Could not understand the exercise. Please try again.', rawText };
     }
-    
-    if (!reps && sameRepsMatch && lastReps) {
+
+    const isBodyweight = BODYWEIGHT_EXERCISES.has(exercise);
+
+    if (hasMemory && lastLoggedSet) {
+      const memoryLog = { ...lastLoggedSet };
+      if (memoryKeywordsDetected.includes('same_all')) {
+        weight = memoryLog.weight;
+        reps = memoryLog.reps;
+        notes.push('memory_same_all');
+      }
+      if (memoryKeywordsDetected.includes('same_weight')) {
+        weight = memoryLog.weight;
+        notes.push('memory_same_weight');
+      }
+      if (memoryKeywordsDetected.includes('same_reps')) {
+        reps = memoryLog.reps;
+        notes.push('memory_same_reps');
+      }
+    } else if (hasMemory && !lastLoggedSet) {
+      needsConfirmation.push('no_previous_set');
+      notes.push('memory_without_previous');
+    }
+
+    if (isBodyweight) {
+      if (weight === undefined) {
+        weight = hasMemory && lastLoggedSet ? lastLoggedSet.weight ?? 0 : 0;
+      }
+      if (weight > 10) {
+        notes.push('weight_high_for_bodyweight');
+        needsConfirmation.push('weight_on_bodyweight');
+      }
+    }
+
+    if (!isBodyweight) {
+      if (weight === undefined && sameWeightMatch && lastWeight !== null) {
+        weight = lastWeight;
+      } else if (weight === undefined && hasMemory && lastLoggedSet) {
+        weight = lastLoggedSet.weight ?? weight;
+        if (weight !== undefined) notes.push('memory_weight');
+      } else if (weight === undefined && targetWeight !== null) {
+        weight = targetWeight;
+        notes.push('using_target_weight');
+      }
+    }
+
+    if (reps === undefined && sameRepsMatch && lastReps !== null) {
       reps = lastReps;
-    } else if (!reps && targetReps) {
+    } else if (reps === undefined && hasMemory && lastLoggedSet) {
+      reps = lastLoggedSet.reps ?? reps;
+      if (reps !== undefined) notes.push('memory_reps');
+    } else if (reps === undefined && targetReps !== null) {
       reps = targetReps;
+      notes.push('using_target_reps');
     }
-    
-    // Final validation
-    let result;
-    if (exercise && (weight !== null && weight !== undefined) && (reps !== null && reps !== undefined)) {
-      result = { exercise, weight, reps, sets: 1 };
-    } else if (exercise && reps && weight) {
-      result = { exercise, weight, reps, sets: 1 };
-    } else {
-      result = { error: "Could not understand, please try again" };
+
+    if (reps === undefined || reps <= 0) {
+      needsConfirmation.push('missing_reps');
+    } else if (reps > 50) {
+      needsConfirmation.push('high_reps');
     }
-    
-    return result;
+
+    if (!isBodyweight && (weight === undefined || weight < 0)) {
+      needsConfirmation.push('missing_weight');
+    }
+
+    if (isBodyweight && weight > 0) {
+      needsConfirmation.push('weight_on_bodyweight');
+    }
+
+    if (!isBodyweight && weight !== undefined && weight !== null) {
+      if (weight > 350) {
+        needsConfirmation.push('weight_unusually_high');
+      } else if (weight === 0) {
+        needsConfirmation.push('weight_zero');
+      }
+    }
+
+    if (needsConfirmation.length > 0) {
+      console.warn('Parser uncertainty:', {
+        exercise,
+        reps,
+        weight,
+        reasons: needsConfirmation,
+        rawText,
+      });
+    }
+
+    const sanitizedWeight = (isBodyweight && (weight === undefined || weight === null)) ? 0 : weight;
+
+    if (reps === undefined && needsConfirmation.length === 0) {
+      return { error: 'Could not understand reps. Please try again.', rawText };
+    }
+
+    return {
+      exercise,
+      weight: sanitizedWeight,
+      reps: reps ?? null,
+      sets: 1,
+      rawText,
+      isBodyweight,
+      needsConfirmation,
+      notes,
+    };
   } catch (error) {
+    console.error('Parser failure', error);
     return { error: 'Parsing failed' };
   }
 }

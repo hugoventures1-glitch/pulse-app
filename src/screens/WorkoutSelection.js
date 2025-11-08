@@ -109,14 +109,14 @@ export default function WorkoutSelection() {
     <div className="w-full max-w-[375px] px-4 pt-8 pb-28 space-y-6">
       <h1 className="text-white text-3xl font-bold mb-6">Choose Workout</h1>
       <Card
-        title="Start Today's Workout"
-        desc="Follow your predefined plan for today."
-        onClick={() => navigate('/workout-preview')}
-      />
-      <Card
         title="Choose a Program"
         desc="Select from 4 proven workout programs."
         onClick={() => navigate('/choose-program')}
+      />
+      <Card
+        title="My Saved Workouts"
+        desc="Launch routines you've built and saved."
+        onClick={() => navigate('/my-workouts')}
       />
       <Card
         title="Create Custom Workout"
