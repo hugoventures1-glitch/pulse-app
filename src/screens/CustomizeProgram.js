@@ -60,11 +60,21 @@ export default function CustomizeProgram() {
     return null;
   }
 
+  const handleNumberInput = (value) => {
+    if (value === '') return '';
+    const cleaned = value.replace(/^0+/, '');
+    return cleaned === '' ? '' : parseInt(cleaned, 10);
+  };
+
   const updateExerciseField = (dayIndex, exerciseIndex, field, value) => {
     setEditedProgram((prev) => {
       const next = deepClone(prev);
-      const parsed = ['sets', 'reps', 'weight'].includes(field) ? parseInt(value, 10) || 0 : value;
-      next.days[dayIndex].exercises[exerciseIndex][field] = parsed;
+      if (['sets', 'reps', 'weight'].includes(field)) {
+        const processed = handleNumberInput(value);
+        next.days[dayIndex].exercises[exerciseIndex][field] = processed === '' ? 0 : processed;
+      } else {
+        next.days[dayIndex].exercises[exerciseIndex][field] = value;
+      }
       return next;
     });
   };
@@ -200,10 +210,11 @@ export default function CustomizeProgram() {
                     <div>
                       <label className="text-white/60 text-xs mb-1 block">Reps</label>
                       <input
-                        type="number"
+                        type="tel"
+                        inputMode="numeric"
                         min="1"
                         max="50"
-                        value={exercise.reps || 0}
+                        value={exercise.reps || ''}
                         onChange={(e) => updateExerciseField(dayIndex, exerciseIndex, 'reps', e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white text-center focus:outline-none focus:border-cyan-400 transition"
                       />
@@ -211,10 +222,11 @@ export default function CustomizeProgram() {
                     <div>
                       <label className="text-white/60 text-xs mb-1 block">Weight (kg)</label>
                       <input
-                        type="number"
+                        type="tel"
+                        inputMode="numeric"
                         min="0"
                         max="500"
-                        value={exercise.weight || 0}
+                        value={exercise.weight || ''}
                         onChange={(e) => updateExerciseField(dayIndex, exerciseIndex, 'weight', e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white text-center focus:outline-none focus:border-cyan-400 transition"
                       />

@@ -4,6 +4,9 @@ import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/spe
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
 import { parseWorkoutWithClaude } from '../lib/claude';
+import { FLAT_EXERCISES, EXERCISE_ALIAS_MAP } from '../data/exerciseLibrary';
+import { checkForNewPR, getPRSettings } from '../utils/personalRecords';
+import PRCelebration from '../components/PRCelebration';
 
 const PROMPT = `You are a workout logging assistant. Parse this voice input and extract workout data.\n\nUser said: [transcribed text]\n\nCommon speech-to-text errors to fix:\n- 'revs' → reps\n- 'wraps' → reps\n- 'sets' might be 'sits'\n- 'kilograms' might be 'kilos', 'kg', 'kgs'\n- Exercise names might be misspelled\n\nReturn ONLY a JSON object (no markdown, no explanation):\n{\n  "exercise": "exercise name",\n  "weight": number in kg,\n  "reps": number,\n  "sets": number (default 1 if not mentioned)\n}\n\nIf you cannot parse it, return: {"error": "Could not understand, please try again"}`;
 
@@ -50,11 +53,135 @@ function normalizeSpokenNumbers(transcript) {
   return normalized;
 }
 
+// Exercise detection function with partial matching - finds exercise names in transcription
+function findExerciseInText(transcription, workoutExercises, exerciseLibrary) {
+  if (!transcription || typeof transcription !== 'string') return null;
+  
+  const text = transcription.toLowerCase().trim();
+  const normalizedText = ` ${text} `;
+  
+  // Helper function to check if exercise name matches transcription (with partial matching)
+  function matchesExercise(exerciseName, searchText) {
+    const nameLower = exerciseName.toLowerCase();
+    const words = nameLower.split(/\s+/);
+    
+    // Exact match (full name)
+    if (normalizedText.includes(` ${nameLower} `) || 
+        normalizedText.endsWith(` ${nameLower}`) || 
+        normalizedText.startsWith(`${nameLower} `)) {
+      return { matched: true, score: nameLower.length, matchType: 'exact' };
+    }
+    
+    // Check each word - if all words in exercise name are present
+    let allWordsMatch = true;
+    let matchScore = 0;
+    for (const word of words) {
+      if (word.length < 3) continue; // Skip very short words
+      const wordPattern = new RegExp(`\\b${word}`, 'i');
+      if (wordPattern.test(searchText)) {
+        matchScore += word.length;
+      } else {
+        allWordsMatch = false;
+        break;
+      }
+    }
+    
+    if (allWordsMatch && matchScore > 0) {
+      return { matched: true, score: matchScore, matchType: 'partial' };
+    }
+    
+    // Check if any significant word from exercise name appears in transcription
+    // (for cases like "bench" matching "Bench Press")
+    for (const word of words) {
+      if (word.length >= 4) { // Only check words with 4+ chars
+        const wordPattern = new RegExp(`\\b${word}`, 'i');
+        if (wordPattern.test(searchText)) {
+          return { matched: true, score: word.length, matchType: 'partial-word' };
+        }
+      }
+    }
+    
+    return { matched: false, score: 0 };
+  }
+  
+  // STEP 1: Check workout exercises first (priority) - find best match
+  let bestWorkoutMatch = null;
+  let bestWorkoutScore = 0;
+  
+  for (let i = 0; i < workoutExercises.length; i++) {
+    const ex = workoutExercises[i];
+    const name = (typeof ex === 'string' ? ex : ex?.name) || '';
+    if (!name) continue;
+    
+    const match = matchesExercise(name, text);
+    if (match.matched && match.score > bestWorkoutScore) {
+      bestWorkoutScore = match.score;
+      bestWorkoutMatch = { name, inWorkout: true, index: i, score: match.score };
+    }
+  }
+  
+  if (bestWorkoutMatch) {
+    return bestWorkoutMatch;
+  }
+  
+  // STEP 2: Check full library using alias map - find best match
+  let bestLibraryMatch = null;
+  let bestLibraryScore = 0;
+  
+  // Check all exercises in library
+  const allLibraryExercises = new Set();
+  EXERCISE_ALIAS_MAP.forEach((canonical) => {
+    allLibraryExercises.add(canonical);
+  });
+  
+  for (const canonical of allLibraryExercises) {
+    const match = matchesExercise(canonical, text);
+    if (match.matched && match.score > bestLibraryScore) {
+      // Check if this exercise is in the workout (should have been caught above, but double-check)
+      const inWorkoutIdx = workoutExercises.findIndex(ex => {
+        const name = (typeof ex === 'string' ? ex : ex?.name) || '';
+        return name.toLowerCase() === canonical.toLowerCase();
+      });
+      
+      if (inWorkoutIdx !== -1) {
+        // Should have been caught in step 1, but handle it anyway
+        bestLibraryScore = match.score;
+        bestLibraryMatch = { name: canonical, inWorkout: true, index: inWorkoutIdx, score: match.score };
+      } else {
+        bestLibraryScore = match.score;
+        bestLibraryMatch = { name: canonical, inWorkout: false, score: match.score };
+      }
+    }
+  }
+  
+  // Also check aliases directly (for cases where alias is better match)
+  for (const [alias, canonical] of EXERCISE_ALIAS_MAP.entries()) {
+    const match = matchesExercise(alias, text);
+    if (match.matched && match.score > bestLibraryScore) {
+      // Check if this exercise is in the workout
+      const inWorkoutIdx = workoutExercises.findIndex(ex => {
+        const name = (typeof ex === 'string' ? ex : ex?.name) || '';
+        return name.toLowerCase() === canonical.toLowerCase();
+      });
+      
+      if (inWorkoutIdx !== -1) {
+        bestLibraryScore = match.score;
+        bestLibraryMatch = { name: canonical, inWorkout: true, index: inWorkoutIdx, score: match.score };
+      } else if (!bestLibraryMatch || match.score > bestLibraryMatch.score) {
+        bestLibraryScore = match.score;
+        bestLibraryMatch = { name: canonical, inWorkout: false, score: match.score };
+      }
+    }
+  }
+  
+  return bestLibraryMatch;
+}
+
 export default function FocusMode() {
   const navigate = useNavigate();
   const location = useLocation();
   const isQuickStart = location.state?.mode === 'quick';
-  const { addLog, workoutPlan, getCurrentSetNum, logSetCompletion, setProgress, markExerciseComplete, addAdditionalExercise, additionalExercises, currentPlanIdx, nextExerciseIdx, isOnline, isPaused, pauseWorkout, resumeWorkout, endWorkout, prefs } = useWorkout();
+  const { addLog, workoutPlan, getCurrentSetNum, logSetCompletion, setProgress, markExerciseComplete, addAdditionalExercise, additionalExercises, currentPlanIdx, setCurrentPlanIdx, nextExerciseIdx, isOnline, isPaused, pauseWorkout, resumeWorkout, endWorkout, prefs, workoutStartAt, updateAdditionalExercise, removeAdditionalExercise } = useWorkout();
   // Rest timer state
   const [restVisible, setRestVisible] = useState(false);
   const [restDuration, setRestDuration] = useState(90); // default seconds
@@ -146,6 +273,7 @@ export default function FocusMode() {
   }, [isPaused]);
 
   const [listening, setListening] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false); // Loading state for voice processing
   const [aiParsed, setAiParsed] = useState(null);
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
@@ -154,6 +282,13 @@ export default function FocusMode() {
   const [pendingEditValues, setPendingEditValues] = useState(null);
   const [pendingEditMode, setPendingEditMode] = useState(false);
   const [recentLog, setRecentLog] = useState(null);
+  const [pendingExerciseAdd, setPendingExerciseAdd] = useState(null); // { name, transcription, context }
+  const [detectedExercise, setDetectedExercise] = useState(null); // Store detected exercise for logging
+  const [showExerciseNav, setShowExerciseNav] = useState(false); // Exercise navigation bottom sheet
+  const [exerciseTransitionKey, setExerciseTransitionKey] = useState(0); // Key for smooth exercise transitions
+  const [editingExerciseIndex, setEditingExerciseIndex] = useState(null); // Index of exercise being edited
+  const [editingExerciseValues, setEditingExerciseValues] = useState(null); // { weight, reps, sets, name }
+  const [currentPR, setCurrentPR] = useState(null); // Current PR celebration data
   const pendingTimeoutRef = useRef(null);
   const recentToastRef = useRef(null);
   const lastLoggedSetRef = useRef(null);
@@ -176,6 +311,7 @@ export default function FocusMode() {
     markExerciseComplete,
     addAdditionalExercise,
     nextExerciseIdx,
+    setCurrentPlanIdx,
     navigate,
     restDuration,
     startRest,
@@ -194,13 +330,14 @@ export default function FocusMode() {
       markExerciseComplete,
       addAdditionalExercise,
       nextExerciseIdx,
+      setCurrentPlanIdx,
       navigate,
       restDuration,
       startRest,
       currentPlanIdx,
       lastLoggedSet: lastLoggedSetRef,
     };
-  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, navigate, restDuration, startRest, currentPlanIdx]);
+  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, setCurrentPlanIdx, navigate, restDuration, startRest, currentPlanIdx]);
 
   // Initialize speech recognition once on mount
   useEffect(() => {
@@ -218,18 +355,160 @@ export default function FocusMode() {
         callbacks.addLog(normalizedTranscript);
         setAiParsed(null);
         setError('');
+        setDetectedExercise(null);
+        setIsProcessingVoice(true); // Start loading
+        
         try {
           const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
-          const context = {
+          const workoutExerciseNames = callbacks.workoutPlan.map(ex => ex);
+          
+          // STEP 1: Check for navigation commands FIRST (skip, next exercise)
+          const text = normalizedTranscript.toLowerCase().trim();
+          const normalizedText = ` ${text} `;
+          
+          // Detect skip/next commands - check for exact phrases first
+          const skipSetCommands = /\b(skip set|skip this set|next set)\b/i;
+          const skipExerciseCommands = /\b(skip exercise|skip this exercise|next exercise|go to next|move to next)\b/i;
+          const simpleSkipCommands = /^(skip|next)$/i.test(text) || /\b(skip this|next one|skip it)\b/i.test(text);
+          
+          if (skipSetCommands.test(normalizedText)) {
+            // "Skip set" - skip current exercise entirely
+            const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
+            if (!currentEx) {
+              setError('No exercise to skip');
+              setIsProcessingVoice(false);
+              return;
+            }
+            
+            // Move to next exercise
+            const nextIdx = callbacks.currentPlanIdx + 1;
+            if (nextIdx < callbacks.workoutPlan.length) {
+              callbacks.setCurrentPlanIdx(nextIdx);
+              setExerciseTransitionKey(prev => prev + 1); // Trigger transition animation
+              const nextEx = callbacks.workoutPlan[nextIdx];
+              speakMessage(`Skipped to ${nextEx.name}`);
+              setError('');
+            } else {
+              speakMessage('No more exercises in workout');
+              setError('Last exercise in workout');
+            }
+            setIsProcessingVoice(false);
+            return; // Don't parse as workout data
+          } else if (skipExerciseCommands.test(normalizedText) || simpleSkipCommands) {
+            // "Skip" or "Next" or "Next exercise" - move to next exercise
+            const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
+            if (!currentEx) {
+              setError('No exercise to skip');
+              setIsProcessingVoice(false);
+              return;
+            }
+            
+            // Move to next exercise
+            const nextIdx = callbacks.currentPlanIdx + 1;
+            if (nextIdx < callbacks.workoutPlan.length) {
+              callbacks.setCurrentPlanIdx(nextIdx);
+              setExerciseTransitionKey(prev => prev + 1); // Trigger transition animation
+              const nextEx = callbacks.workoutPlan[nextIdx];
+              speakMessage(`Switched to ${nextEx.name}`);
+              setError('');
+            } else {
+              speakMessage('No more exercises in workout');
+              setError('Last exercise in workout');
+            }
+            setIsProcessingVoice(false);
+            return; // Don't parse as workout data
+          }
+          
+          // STEP 2: Detect exercise in transcription BEFORE parsing
+          const detected = findExerciseInText(
+            normalizedTranscript,
+            workoutExerciseNames,
+            FLAT_EXERCISES.map(ex => ex.name)
+          );
+          
+          // STEP 3: Handle detected exercise based on mode and workout status
+          if (detected) {
+            const currentExerciseName = currentEx?.name || null;
+            const isDifferentExercise = currentExerciseName && 
+              detected.name.toLowerCase() !== currentExerciseName.toLowerCase();
+            
+            if (detected.inWorkout && detected.index !== undefined) {
+              // Exercise is in workout
+              if (isDifferentExercise) {
+                // Switch to detected exercise
+                callbacks.setCurrentPlanIdx(detected.index);
+                setExerciseTransitionKey(prev => prev + 1); // Trigger smooth transition
+                speakMessage(`Switched to ${detected.name}`);
+                setDetectedExercise(detected.name);
+              }
+              // Continue with parsing using detected exercise...
+            } else {
+              // Exercise NOT in workout - found in library
+              // Show add modal for both regular and Quick Start mode
+              setPendingExerciseAdd({
+                exerciseName: detected.name,
+                transcription: normalizedTranscript,
+                isQuickStart: callbacks.isQuickStart,
+                currentContext: {
             currentExercise: currentEx?.name || null,
             lastWeight: null,
             lastReps: null,
             targetWeight: currentEx?.weight || null,
             targetReps: currentEx?.reps || null
+                }
+              });
+              setIsProcessingVoice(false); // Clear loading while waiting for confirmation
+              // Don't proceed with parsing - wait for user to confirm
+              return;
+            }
+          } else {
+            // No exercise detected in transcription
+            // Check if transcription looks like it contains an exercise name
+            // (has words that might be exercise names)
+            const exerciseKeywords = /(bench|squat|deadlift|press|curl|row|pull|push|fly|raise|extension|dip|crunch|plank|lung|lateral|tricep|bicep|shoulder|chest|back|leg|arm|core)/i;
+            const mightContainExercise = exerciseKeywords.test(normalizedTranscript);
+            
+            if (mightContainExercise) {
+              // Transcription seems to mention an exercise but we couldn't detect it
+              setError('Exercise not recognized. Please try saying the full exercise name.');
+              speakMessage('Exercise not recognized');
+              setIsProcessingVoice(false);
+              return;
+            }
+            
+            // No exercise mentioned - use current exercise (only if in regular mode)
+            if (!currentEx && !callbacks.isQuickStart) {
+              setError('No exercise active. Please specify an exercise name.');
+              setIsProcessingVoice(false);
+              return;
+            }
+          }
+          
+          // STEP 4: Build context for parsing
+          // Use detected exercise if found, otherwise use current
+          const exerciseForParsing = detected && detected.inWorkout && detected.index !== undefined
+            ? callbacks.workoutPlan[detected.index]
+            : currentEx;
+          
+          const exerciseNameForParsing = detected?.name || exerciseForParsing?.name || null;
+          
+          // In Quick Start mode, if no exercise detected and no current, show error
+          if (callbacks.isQuickStart && !exerciseNameForParsing) {
+            setError('Could not identify exercise. Please say the exercise name clearly.');
+            setIsProcessingVoice(false);
+            return;
+          }
+          
+          const context = {
+            currentExercise: exerciseNameForParsing,
+            lastWeight: null,
+            lastReps: null,
+            targetWeight: exerciseForParsing?.weight || null,
+            targetReps: exerciseForParsing?.reps || null
           };
 
-          if (currentEx && callbacks.setProgress?.[currentEx.name]) {
-            const values = callbacks.setProgress[currentEx.name].values || [];
+          if (exerciseForParsing && exerciseNameForParsing && callbacks.setProgress?.[exerciseNameForParsing]) {
+            const values = callbacks.setProgress[exerciseNameForParsing].values || [];
             if (values.length > 0) {
               const lastSet = values[values.length - 1];
               context.lastWeight = lastSet.weight || null;
@@ -237,13 +516,25 @@ export default function FocusMode() {
             }
           }
 
+          // STEP 5: Parse weight/reps with Claude
           const result = await parseWorkoutWithClaude(normalizedTranscript, {
             ...context,
             lastLoggedSet: callbacks.lastLoggedSet?.current || null,
           });
+          
           if (result.error) {
             setError(result.error);
+            setIsProcessingVoice(false);
             return;
+          }
+
+          // CRITICAL: Override exercise name with detected exercise if found
+          // This ensures we log to the correct exercise, not the one Claude might return
+          if (detected && detected.name) {
+            result.exercise = detected.name;
+          } else if (exerciseNameForParsing) {
+            // Use the exercise we determined, not what Claude might return
+            result.exercise = exerciseNameForParsing;
           }
 
           setAiParsed(result);
@@ -256,6 +547,7 @@ export default function FocusMode() {
               weight: result.isBodyweight ? 'bodyweight' : (result.weight ?? ''),
             });
             setPendingEditMode(false);
+            setIsProcessingVoice(false); // Clear loading while waiting for confirmation
             if (needsConfirmation) {
               const reasons = (result.needsConfirmation || []).join(', ');
               setError('Need confirmation: ' + reasons.replace(/_/g, ' '));
@@ -265,10 +557,14 @@ export default function FocusMode() {
           }
 
           handleConfirmedResult(result);
+          setIsProcessingVoice(false); // Clear loading
 
         } catch (e) {
           setError("AI parsing failed, try again");
           setAiParsed(null);
+          setIsProcessingVoice(false); // Clear loading on error
+        } finally {
+          setIsProcessingVoice(false); // Ensure loading is cleared
         }
       },
       onStart: () => {
@@ -292,6 +588,26 @@ export default function FocusMode() {
 
   const handleConfirmedResult = (result) => {
     const callbacks = callbacksRef.current;
+    
+    // Check for Personal Record BEFORE logging
+    let detectedPR = null;
+    if (result.exercise && result.weight && result.reps && !result.isBodyweight) {
+      const prSettings = getPRSettings();
+      
+      if (prSettings.notificationsEnabled) {
+        detectedPR = checkForNewPR(
+          result.exercise,
+          result.weight,
+          result.reps,
+          result.unit || 'kg'
+        );
+      }
+    }
+
+    // Show PR celebration if detected
+    if (detectedPR && detectedPR.isNewPR) {
+      setCurrentPR(detectedPR);
+    }
 
     if (callbacks.isQuickStart) {
       if (result.exercise) {
@@ -376,8 +692,19 @@ export default function FocusMode() {
     handleConfirmedResult(confirmedResult);
   };
 
+  const handleNumberInput = (value) => {
+    if (value === '') return '';
+    const cleaned = value.replace(/^0+/, '');
+    return cleaned === '' ? '' : parseInt(cleaned, 10);
+  };
+
   const handleEditPending = (field, value) => {
+    if (field === 'reps' || field === 'weight') {
+      const processed = handleNumberInput(value);
+      setPendingEditValues((prev) => ({ ...prev, [field]: processed }));
+    } else {
     setPendingEditValues((prev) => ({ ...prev, [field]: value }));
+    }
   };
 
   const handleCancelPending = () => {
@@ -387,23 +714,161 @@ export default function FocusMode() {
     setError('Could not confirm. Please repeat the command.');
   };
 
-  useEffect(() => {
-    if (pendingConfirmation && !pendingEditMode) {
-      if (pendingTimeoutRef.current) clearTimeout(pendingTimeoutRef.current);
-      pendingTimeoutRef.current = setTimeout(() => {
-        handleConfirmPending();
-      }, 3000);
-    } else if (pendingTimeoutRef.current) {
-      clearTimeout(pendingTimeoutRef.current);
-      pendingTimeoutRef.current = null;
-    }
-    return () => {
-      if (pendingTimeoutRef.current) {
-        clearTimeout(pendingTimeoutRef.current);
-        pendingTimeoutRef.current = null;
-      }
+  const handleConfirmAddExercise = async () => {
+    if (!pendingExerciseAdd) return;
+    
+    const callbacks = callbacksRef.current;
+    const { exerciseName, transcription, currentContext, isQuickStart } = pendingExerciseAdd;
+    
+    // Now parse the transcription for weight/reps
+    const context = {
+      ...currentContext,
+      currentExercise: exerciseName,
+      lastLoggedSet: callbacks.lastLoggedSet?.current || null,
     };
-  }, [pendingConfirmation, pendingEditMode]);
+    
+    try {
+      const result = await parseWorkoutWithClaude(transcription, context);
+      if (result.error) {
+        setError(result.error);
+        setPendingExerciseAdd(null);
+        return;
+      }
+      
+      // CRITICAL: Override with detected exercise name
+      result.exercise = exerciseName;
+      
+      // Add exercise to workout plan (as additional exercise) with parsed data
+      if (isQuickStart) {
+        // In Quick Start, add with the parsed weight/reps
+        callbacks.addAdditionalExercise({ 
+          ...result, 
+          complete: true 
+        });
+      } else {
+        // In regular mode, add as additional exercise
+        callbacks.addAdditionalExercise({ 
+          name: exerciseName, 
+          sets: result.sets || 1, 
+          reps: result.reps || 0, 
+          weight: result.isBodyweight ? 0 : (result.weight || 0), 
+          complete: true 
+        });
+        
+        // Log the set
+        callbacks.logSetCompletion({ 
+          exercise: exerciseName, 
+          reps: result.reps || 0, 
+          weight: result.isBodyweight ? 0 : (result.weight ?? 0), 
+          sets: result.sets || 1 
+        });
+      }
+      
+      // Check for PR before logging
+      let detectedPR = null;
+      if (exerciseName && result.weight && result.reps && !result.isBodyweight) {
+        const prSettings = getPRSettings();
+        if (prSettings.notificationsEnabled) {
+          detectedPR = checkForNewPR(
+            exerciseName,
+            result.weight,
+            result.reps,
+            result.unit || 'kg'
+          );
+        }
+      }
+      
+      // Show PR celebration if detected
+      if (detectedPR && detectedPR.isNewPR) {
+        setCurrentPR(detectedPR);
+      }
+      
+      // Show celebration
+      speakMessage('Logged');
+      setCelebrateSet(true); 
+      playSuccessTone();
+      setTimeout(() => setCelebrateSet(false), 700);
+      
+      // Start rest timer
+      if (isQuickStart) {
+        callbacks.startRest(callbacks.restDuration, exerciseName);
+      }
+      
+      // Update recent log
+      const summaryWeight = result.isBodyweight ? 'bodyweight' : `${result.weight ?? '?'} kg`;
+      setRecentLog({
+        exercise: exerciseName,
+        reps: result.reps ?? '?',
+        weight: summaryWeight,
+      });
+      if (recentToastRef.current) clearTimeout(recentToastRef.current);
+      recentToastRef.current = setTimeout(() => setRecentLog(null), 2000);
+      
+      // Update last logged set
+      if (exerciseName) {
+        lastLoggedSetRef.current = {
+          exercise: exerciseName,
+          weight: result.isBodyweight ? 0 : (result.weight ?? 0),
+          reps: result.reps ?? 0,
+        };
+      }
+      
+    } catch (e) {
+      setError("AI parsing failed, try again");
+    }
+    
+    setPendingExerciseAdd(null);
+  };
+
+  const handleCancelAddExercise = () => {
+    setPendingExerciseAdd(null);
+    setError('Cancelled. Please repeat the command.');
+  };
+
+  // Handle editing logged exercises in Quick Start mode
+  const handleStartEditExercise = (index) => {
+    const exercise = additionalExercises[index];
+    if (exercise) {
+      setEditingExerciseIndex(index);
+      setEditingExerciseValues({
+        name: exercise.name || '',
+        weight: exercise.weight || 0,
+        reps: exercise.reps || 0,
+        sets: exercise.sets || 1
+      });
+    }
+  };
+
+  const handleSaveEditExercise = () => {
+    if (editingExerciseIndex === null || !editingExerciseValues) return;
+    
+    const updates = {
+      name: editingExerciseValues.name.trim() || additionalExercises[editingExerciseIndex].name,
+      weight: Number(editingExerciseValues.weight) || 0,
+      reps: Number(editingExerciseValues.reps) || 0,
+      sets: Number(editingExerciseValues.sets) || 1
+    };
+    
+    updateAdditionalExercise(editingExerciseIndex, updates);
+    setEditingExerciseIndex(null);
+    setEditingExerciseValues(null);
+    if (window?.__toast) window.__toast('Exercise updated');
+  };
+
+  const handleCancelEditExercise = () => {
+    setEditingExerciseIndex(null);
+    setEditingExerciseValues(null);
+  };
+
+  const handleDeleteExercise = (index) => {
+    if (window.confirm('Delete this exercise?')) {
+      removeAdditionalExercise(index);
+      if (window?.__toast) window.__toast('Exercise deleted');
+    }
+  };
+
+  // Removed auto-confirm timeout - modal now stays visible until user interacts
+  // This ensures users have time to review abnormal weight/reps and make a decision
 
   return (
     <div className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-center relative">
@@ -468,16 +933,112 @@ export default function FocusMode() {
         <div className="w-full mb-8 pulse-glass rounded-3xl p-5 space-y-3">
           <div className="text-white/90 text-sm font-semibold mb-2">Logged Exercises</div>
           {additionalExercises && additionalExercises.length > 0 ? (
-            <div className="space-y-2">
-              {additionalExercises.map((ex, idx) => (
-                <div key={idx} className="flex items-center justify-between px-3 py-2 rounded-xl bg-white/5 border border-white/10">
-                  <span className="text-white font-medium">{ex.name}</span>
-                  <span className="text-white/80 text-sm">
+            <div className="space-y-3">
+              {additionalExercises.map((ex, idx) => {
+                const isEditing = editingExerciseIndex === idx;
+                const editValues = isEditing ? editingExerciseValues : null;
+                
+                return (
+                  <div key={idx} className="rounded-xl bg-white/5 border border-white/10 p-4">
+                    {isEditing ? (
+                      /* Edit Mode */
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-white/70 text-xs mb-1.5 block">Exercise Name</label>
+                          <input
+                            type="text"
+                            value={editValues?.name || ''}
+                            onChange={(e) => setEditingExerciseValues(prev => ({ ...prev, name: e.target.value }))}
+                            className="w-full h-11 px-4 rounded-xl bg-white/10 border border-white/20 text-white text-sm focus-glow outline-none"
+                            placeholder="Exercise name"
+                          />
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div>
+                            <label className="text-white/70 text-xs mb-1.5 block">Weight (kg)</label>
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              value={editValues?.weight || ''}
+                              onChange={(e) => {
+                                const processed = handleNumberInput(e.target.value);
+                                setEditingExerciseValues(prev => ({ ...prev, weight: processed === '' ? 0 : processed }));
+                              }}
+                              className="w-full h-11 px-3 rounded-xl bg-white/10 border border-white/20 text-white text-center text-sm focus-glow outline-none tap-target"
+                              placeholder="0"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-white/70 text-xs mb-1.5 block">Reps</label>
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              value={editValues?.reps || ''}
+                              onChange={(e) => {
+                                const processed = handleNumberInput(e.target.value);
+                                setEditingExerciseValues(prev => ({ ...prev, reps: processed === '' ? 0 : processed }));
+                              }}
+                              className="w-full h-11 px-3 rounded-xl bg-white/10 border border-white/20 text-white text-center text-sm focus-glow outline-none tap-target"
+                              placeholder="0"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-white/70 text-xs mb-1.5 block">Sets</label>
+                            <input
+                              type="tel"
+                              inputMode="numeric"
+                              value={editValues?.sets || ''}
+                              onChange={(e) => {
+                                const processed = handleNumberInput(e.target.value);
+                                setEditingExerciseValues(prev => ({ ...prev, sets: processed === '' ? 1 : processed }));
+                              }}
+                              className="w-full h-11 px-3 rounded-xl bg-white/10 border border-white/20 text-white text-center text-sm focus-glow outline-none tap-target"
+                              placeholder="1"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 pt-2">
+                          <button
+                            onClick={handleSaveEditExercise}
+                            className="flex-1 h-11 rounded-xl bg-emerald-500 text-white font-semibold text-sm btn-press tap-target"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={handleCancelEditExercise}
+                            className="flex-1 h-11 rounded-xl bg-white/10 text-white border border-white/20 text-sm btn-press tap-target"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => handleDeleteExercise(idx)}
+                            className="h-11 px-4 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-400/30 text-sm btn-press tap-target"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* View Mode */
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white font-semibold truncate">{ex.name}</div>
+                          <div className="text-white/70 text-xs mt-1">
                     {ex.weight} kg × {ex.reps} reps
                     {ex.sets > 1 && ` × ${ex.sets} sets`}
-                  </span>
                 </div>
-              ))}
+                        </div>
+                        <button
+                          onClick={() => handleStartEditExercise(idx)}
+                          className="ml-3 px-3 h-9 rounded-xl bg-white/10 text-white border border-white/20 text-xs font-medium btn-press tap-target hover:bg-white/15"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className="text-white/60 text-sm text-center py-4">No exercises logged yet</div>
@@ -487,10 +1048,13 @@ export default function FocusMode() {
 
       {/* Normal mode: Show workout plan */}
       {!isQuickStart && (
-      <div className="w-full mb-8 pulse-glass rounded-3xl p-5 space-y-4">
-        <div className="inline-flex items-center px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-400/30">Strength</div>
-        <div className="text-white text-xl font-semibold">{workoutPlan[currentPlanIdx]?.name || 'No Exercise Selected'}</div>
-        <div className="grid grid-cols-3 gap-2 text-white/80">
+      <div 
+        key={`exercise-${currentPlanIdx}-${exerciseTransitionKey}`}
+        className="w-full mb-8 pulse-glass rounded-3xl p-6 space-y-6 fade-in"
+      >
+        <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-400/30">Strength</div>
+        <div className="text-white text-2xl font-bold">{workoutPlan[currentPlanIdx]?.name || 'No Exercise Selected'}</div>
+        <div className="grid grid-cols-3 gap-4 text-white/80">
           {(() => {
             const ex = workoutPlan[currentPlanIdx] || { name: '', sets: 1, reps: 8, weight: 60 };
             const progress = (setProgress?.[ex.name]?.progress || 0);
@@ -504,20 +1068,24 @@ export default function FocusMode() {
             const displayWeight = showingActuals && lastSetVals.weight !== undefined ? lastSetVals.weight : (ex.weight || 60);
             const isTarget = !showingActuals;
             return <>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-3 text-center"><div className="text-[11px] uppercase">Sets</div><div className="text-base font-semibold">{progress}/{ex.sets}</div></div>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-3 text-center">
-                <div className="text-[11px] uppercase">Reps</div>
-                <div className={`text-base font-semibold ${isTarget ? 'text-white/60' : 'text-white'}`}>
+              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center"><div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Sets</div><div className="text-2xl font-bold">{progress}/{ex.sets}</div></div>
+              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center">
+                <div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Reps</div>
+                <div className={`text-2xl font-bold ${isTarget ? 'text-white/60' : 'text-white'}`}>
                   {displayReps}
-                  {isTarget && <span className="text-[10px] text-white/40 ml-1">(target)</span>}
                 </div>
+                {isTarget && (
+                  <div className="text-[10px] text-white/40 mt-1 font-normal">(target)</div>
+                )}
               </div>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-3 text-center">
-                <div className="text-[11px] uppercase">Weight</div>
-                <div className={`text-base font-semibold ${isTarget ? 'text-white/60' : 'text-white'}`}>
+              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center">
+                <div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Weight</div>
+                <div className={`text-2xl font-bold ${isTarget ? 'text-white/60' : 'text-white'}`}>
                   {displayWeight} kg
-                  {isTarget && <span className="text-[10px] text-white/40 ml-1">(target)</span>}
                 </div>
+                {isTarget && (
+                  <div className="text-[10px] text-white/40 mt-1 font-normal">(target)</div>
+                )}
               </div>
             </>;
           })()}
@@ -548,13 +1116,36 @@ export default function FocusMode() {
 
       {/* Pause button (top-left) */}
       <div className="fixed top-4 left-4 z-40">
-        <button onClick={pauseWorkout} className="px-3 h-9 rounded-full bg-white/10 text-white border border-white/15 text-xs backdrop-blur-md">Pause</button>
+        <button 
+          onClick={pauseWorkout} 
+          className="btn-press tap-target px-4 h-11 rounded-full bg-white/10 text-white border border-white/15 text-sm backdrop-blur-md hover:bg-white/15 active:bg-white/20"
+        >
+          {isPaused ? 'Resume' : 'Pause'}
+        </button>
       </div>
 
+      {/* Exercise Navigation Button */}
+      {!isQuickStart && workoutPlan.length > 0 && (
+        <div className="fixed left-4 bottom-[calc(env(safe-area-inset-bottom)+140px)] z-20">
+          <button
+            onClick={() => setShowExerciseNav(true)}
+            className="btn-press tap-target px-4 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20 flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+            Exercises ({workoutPlan.length})
+          </button>
+        </div>
+      )}
+
       {/* Finish Workout Button */}
-      <div className="fixed right-4 bottom-24 z-10">
-        <button onClick={()=>navigate('/summary')} className="px-4 h-11 rounded-full bg-white/10 text-white border border-white/15 backdrop-blur-md">
-          Finish Workout
+      <div className="fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+140px)] z-20">
+        <button 
+          onClick={()=>navigate('/summary')} 
+          className="btn-press tap-target px-5 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20"
+        >
+          Finish
         </button>
       </div>
 
@@ -610,12 +1201,15 @@ export default function FocusMode() {
                     key={s}
                     onClick={() => {
                       // If timer is running and same duration tapped, do nothing
-                      if (restVisible && s === restDuration) {
+                      if (restVisible && s === restDuration && restRemaining === restDuration) {
                         return;
                       }
-                      // Apply new duration and remaining when changed intentionally
+                      // Calculate elapsed time from current timer
+                      const elapsed = restDuration - restRemaining;
+                      // Set new duration, but continue from current elapsed time
+                      // So if 15s elapsed on 210s timer, and clicking 90s: 90s - 15s = 75s remaining
                       setRestDuration(s);
-                      setRestRemaining(s);
+                      setRestRemaining(Math.max(0, s - elapsed));
                     }}
                     className={`h-10 rounded-xl border text-sm ${restDuration===s? 'bg-white text-slate-900 border-transparent':'bg-white/10 text-white border-white/10'}`}
                   >
@@ -673,7 +1267,8 @@ export default function FocusMode() {
                   <div>
                     <label className="text-white/60 text-[10px] uppercase block mb-1">Reps</label>
                     <input
-                      type="number"
+                      type="tel"
+                      inputMode="numeric"
                       min="1"
                       max="200"
                       value={pendingEditValues?.reps ?? ''}
@@ -685,7 +1280,8 @@ export default function FocusMode() {
                     <div>
                       <label className="text-white/60 text-[10px] uppercase block mb-1">Weight (kg)</label>
                       <input
-                        type="number"
+                        type="tel"
+                        inputMode="numeric"
                         min="0"
                         max="500"
                         value={pendingEditValues?.weight ?? ''}
@@ -743,12 +1339,266 @@ export default function FocusMode() {
         </div>
       )}
 
+      {/* Subtle Toast Notification for Logged Set */}
       {recentLog && (
-        <div className="fixed inset-x-0 top-16 z-40 px-4">
-          <div className="pulse-glass rounded-2xl px-4 py-3 border border-emerald-400/40 bg-emerald-400/15 text-white text-sm shadow-lg">
-            Logged: {recentLog.exercise} • {recentLog.reps} reps • {recentLog.weight}
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="pulse-glass rounded-full px-4 py-2 border border-emerald-400/40 bg-emerald-500/20 text-white text-xs font-medium shadow-xl backdrop-blur-md">
+            ✓ {recentLog.exercise} • {recentLog.reps} reps • {recentLog.weight}
           </div>
         </div>
+      )}
+
+      {/* Error Toast */}
+      {error && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="pulse-glass rounded-full px-4 py-2 border border-rose-400/40 bg-rose-500/20 text-white text-xs font-medium shadow-xl backdrop-blur-md">
+            {error}
+          </div>
+        </div>
+      )}
+
+      {/* Loading Spinner for Voice Processing */}
+      {isProcessingVoice && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4">
+          <div className="pulse-glass rounded-full px-4 py-2 border border-cyan-400/40 bg-cyan-500/20 text-white text-xs font-medium shadow-xl backdrop-blur-md flex items-center gap-2">
+            <svg className="w-4 h-4 spinner" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            Processing voice command...
+          </div>
+        </div>
+      )}
+
+      {/* Add Exercise Modal */}
+      {pendingExerciseAdd && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/60" onClick={handleCancelAddExercise} />
+          <div className="absolute inset-x-0 bottom-0 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-4">
+            <div className="pulse-glass rounded-2xl p-4 border border-white/20 shadow-xl">
+              <div className="text-white text-sm font-semibold mb-2">
+                Add Exercise to Workout?
+              </div>
+              <div className="text-white/70 text-xs mb-4">
+                Did you want to add <span className="text-white font-semibold">{pendingExerciseAdd.exerciseName}</span> to this workout?
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCancelAddExercise}
+                  className="flex-1 h-10 rounded-full bg-white/10 text-white border border-white/20 text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmAddExercise}
+                  className="flex-1 h-10 rounded-full bg-emerald-400 text-slate-900 text-xs font-semibold"
+                >
+                  Add & Log
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Exercise Navigation Bottom Sheet */}
+      {showExerciseNav && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowExerciseNav(false)} />
+          <div className="absolute inset-x-0 bottom-0 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-4">
+            <div className="pulse-glass rounded-t-3xl rounded-b-2xl p-5 border border-white/20 shadow-xl max-h-[70vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex-1">
+                  <div className="text-white text-lg font-semibold mb-2">Workout Overview</div>
+                  <div className="space-y-1">
+                    {(() => {
+                      const fullyCompleted = workoutPlan.filter(ex => {
+                        const progress = setProgress?.[ex.name]?.progress || 0;
+                        return progress >= (ex.sets || 1);
+                      }).length;
+                      const inProgress = workoutPlan.filter(ex => {
+                        const progress = setProgress?.[ex.name]?.progress || 0;
+                        return progress > 0 && progress < (ex.sets || 1);
+                      }).length;
+                      const notStarted = workoutPlan.length - fullyCompleted - inProgress;
+                      
+                      const totalSetsCompleted = workoutPlan.reduce((sum, ex) => {
+                        const progress = setProgress?.[ex.name]?.progress || 0;
+                        return sum + progress;
+                      }, 0);
+                      const totalSetsPlanned = workoutPlan.reduce((sum, ex) => sum + (ex.sets || 1), 0);
+                      
+                      return (
+                        <div className="text-white/70 text-xs space-y-1">
+                          <div className="flex items-center gap-4">
+                            <span>
+                              <span className="text-emerald-300 font-semibold">{fullyCompleted}</span> completed
+                            </span>
+                            {inProgress > 0 && (
+                              <span>
+                                <span className="text-cyan-300 font-semibold">{inProgress}</span> in progress
+                              </span>
+                            )}
+                            {notStarted > 0 && (
+                              <span>
+                                <span className="text-white/50 font-semibold">{notStarted}</span> not started
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-white/60">
+                            Sets: <span className="text-white font-semibold">{totalSetsCompleted}/{totalSetsPlanned}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowExerciseNav(false)}
+                  className="w-8 h-8 rounded-full bg-white/10 text-white border border-white/20 flex items-center justify-center ml-3 flex-shrink-0"
+                >
+                  ×
+                </button>
+              </div>
+              
+              <div className="space-y-3">
+                {workoutPlan.map((exercise, idx) => {
+                  const progress = setProgress?.[exercise.name]?.progress || 0;
+                  const values = setProgress?.[exercise.name]?.values || [];
+                  const isCurrent = currentPlanIdx === idx;
+                  const isCompleted = progress >= (exercise.sets || 1);
+                  const totalSets = exercise.sets || 1;
+                  const lastLoggedSet = values.length > 0 ? values[values.length - 1] : null;
+                  const targetWeight = exercise.weight || 0;
+                  const targetReps = exercise.reps || 0;
+                  
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setCurrentPlanIdx(idx);
+                        setExerciseTransitionKey(prev => prev + 1); // Trigger smooth transition
+                        setShowExerciseNav(false);
+                        speakMessage(`Switched to ${exercise.name}`);
+                      }}
+                      className={`w-full p-4 rounded-2xl border text-left transition ${
+                        isCurrent
+                          ? 'bg-cyan-500/20 border-cyan-400/50'
+                          : isCompleted
+                          ? 'bg-emerald-500/10 border-emerald-400/30'
+                          : 'bg-white/5 border-white/10'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 flex-1 min-w-0">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                            isCompleted
+                              ? 'bg-emerald-400 text-slate-900'
+                              : isCurrent
+                              ? 'bg-cyan-400 text-slate-900'
+                              : 'bg-white/20 text-white/60'
+                          }`}>
+                            {isCompleted ? (
+                              <span className="text-sm font-bold">✓</span>
+                            ) : isCurrent ? (
+                              <span className="text-xs">●</span>
+                            ) : (
+                              <span className="text-xs">○</span>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className={`text-base font-semibold mb-1 ${
+                              isCurrent ? 'text-cyan-200' : isCompleted ? 'text-emerald-200' : 'text-white'
+                            }`}>
+                              {exercise.name}
+                            </div>
+                            
+                            {/* Progress */}
+                            <div className="text-xs text-white/70 mb-2">
+                              <span className={progress > 0 ? 'text-white' : 'text-white/60'}>
+                                {progress}/{totalSets} sets completed
+                              </span>
+                              {isCompleted && (
+                                <span className="text-emerald-300 ml-2">✓ Done</span>
+                              )}
+                              {isCurrent && !isCompleted && (
+                                <span className="text-cyan-300 ml-2">● Current</span>
+                              )}
+                            </div>
+                            
+                            {/* Target Info */}
+                            <div className="flex items-center gap-4 text-xs text-white/60 mb-2">
+                              <span>Target: {targetWeight}kg × {targetReps} reps</span>
+                            </div>
+                            
+                            {/* Last Logged Set */}
+                            {lastLoggedSet && (
+                              <div className="text-xs text-white/80 mt-2 pt-2 border-t border-white/10">
+                                <span className="text-white/60">Last set: </span>
+                                <span className="text-white font-semibold">
+                                  {lastLoggedSet.weight || 0}kg × {lastLoggedSet.reps || 0} reps
+                                </span>
+                              </div>
+                            )}
+                            
+                            {/* All Logged Sets */}
+                            {values.length > 0 && (
+                              <div className="mt-2 pt-2 border-t border-white/10">
+                                <div className="text-[10px] text-white/50 uppercase tracking-wide mb-1.5">Sets Logged</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {values.map((set, setIdx) => (
+                                    <div
+                                      key={setIdx}
+                                      className="px-2 py-1 rounded-lg bg-white/10 text-[10px] text-white/90 font-medium"
+                                    >
+                                      Set {setIdx + 1}: {set.weight || 0}kg × {set.reps || 0}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+                
+                {additionalExercises.length > 0 && (
+                  <>
+                    <div className="text-white/60 text-xs uppercase tracking-wide mt-4 mb-2">Additional Exercises</div>
+                    {additionalExercises.map((exercise, idx) => (
+                      <div
+                        key={`extra-${idx}`}
+                        className="w-full p-3 rounded-2xl bg-white/5 border border-white/10 text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-6 h-6 rounded-full bg-emerald-400 text-slate-900 flex items-center justify-center flex-shrink-0">
+                            ✓
+                          </div>
+                          <div className="flex-1">
+                            <div className="text-sm font-semibold text-emerald-200">{exercise.name}</div>
+                            <div className="text-xs text-white/60 mt-0.5">
+                              {exercise.sets} × {exercise.reps} @ {exercise.weight}kg
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Personal Record Celebration Modal */}
+      {currentPR && (
+        <PRCelebration 
+          pr={currentPR} 
+          onDismiss={() => setCurrentPR(null)}
+        />
       )}
     </div>
   );

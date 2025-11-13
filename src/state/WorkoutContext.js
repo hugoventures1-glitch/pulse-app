@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { WORKOUT_PROGRAMS } from '../data/workoutPrograms';
+import { cleanupWorkoutHistory, shouldRunCleanup, markCleanupComplete, exportFullHistory, getRetentionStats } from '../utils/dataRetention';
 
 const CUSTOM_PROGRAMS_KEY = 'pulseCustomPrograms';
 const SAVED_WORKOUTS_KEY = 'pulseSavedWorkouts';
@@ -10,9 +11,12 @@ const WorkoutContext = createContext(null);
 const PLAN_KEY = 'pulsePlan';
 const PROGRESS_KEY = 'pulseSetProgress';
 const PREFS_KEY = 'pulsePrefs';
+const USER_PROFILE_KEY = 'pulseUserProfile'; // User profile (name, goal, etc.)
+const USER_STATS_KEY = 'pulseUserStats'; // User stats (workout count, streak, total volume)
 const QUEUE_KEY = 'pulseOfflineQueue';
 const PAUSE_KEY = 'pulsePaused';
 const HISTORY_KEY = 'pulseHistory';
+const WORKOUT_HISTORY_KEY = 'workoutHistory'; // New key for full workout history
 const PROGRAM_KEY = 'pulseProgram';
 const PROGRAM_DAY_KEY = 'pulseProgramDay';
 const PROGRAM_START_DATE_KEY = 'pulseProgramStartDate';
@@ -50,6 +54,36 @@ export function WorkoutProvider({ children }) {
   });
   const [pausedAt, setPausedAt] = useState(null);
 
+  // Data retention cleanup - run on mount and weekly
+  const cleanupRunRef = useRef(false);
+  useEffect(() => {
+    if (cleanupRunRef.current) return;
+    
+    // Run cleanup check once on mount
+    if (shouldRunCleanup()) {
+      const currentHistory = (() => {
+        try {
+          const h = localStorage.getItem(HISTORY_KEY);
+          return h ? JSON.parse(h) : [];
+        } catch (_) {
+          return [];
+        }
+      })();
+      
+      if (currentHistory.length > 0) {
+        const result = cleanupWorkoutHistory(currentHistory);
+        if (result.archived > 0) {
+          setHistory(result.history);
+          console.log(`Archived ${result.archived} old workouts, kept ${result.prsUpdated} PRs`);
+        }
+        markCleanupComplete();
+      } else {
+        markCleanupComplete();
+      }
+    }
+    cleanupRunRef.current = true;
+  }, []); // Run once on mount
+
   useEffect(() => {
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch(_){}
   }, [history]);
@@ -65,6 +99,52 @@ export function WorkoutProvider({ children }) {
   useEffect(() => {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch(_){}
   }, [prefs]);
+
+  // User Profile (name, goal, unit preference, etc.)
+  const [userProfile, setUserProfile] = useState(() => {
+    try {
+      const val = localStorage.getItem(USER_PROFILE_KEY);
+      return val ? JSON.parse(val) : null;
+    } catch(e) { return null; }
+  });
+  useEffect(() => {
+    try { 
+      if (userProfile) {
+        localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(userProfile));
+        // Also sync to userProfile key for backward compatibility with HomeDashboard
+        localStorage.setItem('userProfile', JSON.stringify(userProfile));
+      }
+    } catch(_){}
+  }, [userProfile]);
+
+  // User Stats (workout count, streak, total volume, etc.)
+  const [userStats, setUserStats] = useState(() => {
+    try {
+      const val = localStorage.getItem(USER_STATS_KEY);
+      return val ? JSON.parse(val) : { 
+        totalWorkouts: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        totalVolume: 0, // in kg
+        lastWorkoutDate: null,
+        workoutCountsByMonth: {}, // { '2025-11': 5, '2025-10': 8 }
+        favoriteExercises: [] // { name, count }
+      };
+    } catch(e) { 
+      return { 
+        totalWorkouts: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        totalVolume: 0,
+        lastWorkoutDate: null,
+        workoutCountsByMonth: {},
+        favoriteExercises: []
+      }; 
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(USER_STATS_KEY, JSON.stringify(userStats)); } catch(_){}
+  }, [userStats]);
 
   const [customPrograms, setCustomPrograms] = useState(() => {
     try {
@@ -362,19 +442,213 @@ export function WorkoutProvider({ children }) {
     });
   };
 
+  const updateAdditionalExercise = useCallback((index, updates) => {
+    setAdditionalExercises((prev) => {
+      const updated = [...prev];
+      if (index >= 0 && index < updated.length) {
+        updated[index] = { ...updated[index], ...updates };
+      }
+      return updated;
+    });
+  }, []);
+
+  const removeAdditionalExercise = useCallback((index) => {
+    setAdditionalExercises((prev) => {
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
+
   const endWorkout = useCallback(() => {
+    // Save workout to workoutHistory before clearing
+    if (workoutStartAt && (workoutPlan.length > 0 || additionalExercises.length > 0)) {
+      // Ensure dates are in ISO format for proper storage
+      const now = Date.now();
+      const endTime = new Date(now).toISOString();
+      const startTime = new Date(workoutStartAt).toISOString();
+      
+      // Calculate duration
+      const durationMs = now - workoutStartAt;
+      const hours = Math.floor(durationMs / (1000 * 60 * 60));
+      const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+      const duration = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      
+      // Build exercises array with sets
+      const exercises = [];
+      let totalVolume = 0;
+      let totalSets = 0;
+      
+      // Add exercises from workout plan
+      workoutPlan.forEach((ex, idx) => {
+        const progress = setProgress?.[ex.name] || {};
+        const values = progress.values || [];
+        const sets = [];
+        let exerciseVolume = 0;
+        
+        values.forEach((set, setIdx) => {
+          const weight = set.weight || 0;
+          const reps = set.reps || 0;
+          const volume = weight * reps;
+          exerciseVolume += volume;
+          
+          sets.push({
+            weight,
+            reps,
+            unit: 'kg',
+            timestamp: new Date(workoutStartAt + (idx * 60000) + (setIdx * 180000)).toISOString() // Approximate timestamps
+          });
+        });
+        
+        if (sets.length > 0) {
+          exercises.push({
+            exerciseId: `${ex.name.toLowerCase().replace(/\s+/g, '_')}_${idx}`,
+            exerciseName: ex.name,
+            sets
+          });
+          totalVolume += exerciseVolume;
+          totalSets += sets.length;
+        }
+      });
+      
+      // Add additional exercises
+      additionalExercises.forEach((ex, idx) => {
+        if (ex.complete && ex.sets && ex.reps && ex.weight) {
+          const sets = [];
+          const weight = ex.weight || 0;
+          const reps = ex.reps || 0;
+          const volume = weight * reps * ex.sets;
+          
+          for (let i = 0; i < ex.sets; i++) {
+            sets.push({
+              weight,
+              reps,
+              unit: 'kg',
+              timestamp: new Date(workoutStartAt + ((workoutPlan.length + idx) * 60000) + (i * 180000)).toISOString()
+            });
+          }
+          
+          exercises.push({
+            exerciseId: `${ex.name.toLowerCase().replace(/\s+/g, '_')}_extra_${idx}`,
+            exerciseName: ex.name,
+            sets
+          });
+          totalVolume += volume;
+          totalSets += ex.sets;
+        }
+      });
+      
+      // Only save if there are logged exercises
+      if (exercises.length > 0) {
+        // Get workout name if available (from saved workout template)
+        // For now, default to "Workout" but can be improved
+        const workoutName = 'Workout'; // Could extract from workout template if available
+        
+        const workoutHistoryEntry = {
+          id: `workout_${now}`,
+          name: workoutName,
+          date: startTime, // ISO string for the workout date (start time)
+          startTime, // ISO string
+          endTime, // ISO string
+          duration,
+          exercises,
+          totalVolume: Math.round(totalVolume),
+          totalSets
+        };
+        
+        // Save to workoutHistory localStorage key
+        try {
+          const existingHistory = localStorage.getItem(WORKOUT_HISTORY_KEY);
+          const workoutHistory = existingHistory ? JSON.parse(existingHistory) : [];
+          // Add new workout to beginning (most recent first)
+          workoutHistory.unshift(workoutHistoryEntry);
+          // Keep last 100 workouts
+          const trimmedHistory = workoutHistory.slice(0, 100);
+          localStorage.setItem(WORKOUT_HISTORY_KEY, JSON.stringify(trimmedHistory));
+          console.log('Workout saved to workoutHistory:', workoutHistoryEntry);
+          
+          // Update user stats
+          setUserStats(prev => {
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            
+            let newStreak = prev.currentStreak || 0;
+            let longestStreak = prev.longestStreak || 0;
+            
+            // Calculate streak
+            if (prev.lastWorkoutDate) {
+              const lastDate = new Date(prev.lastWorkoutDate);
+              const lastWorkoutDay = new Date(lastDate.getFullYear(), lastDate.getMonth(), lastDate.getDate());
+              
+              const daysDiff = Math.floor((today - lastWorkoutDay) / (1000 * 60 * 60 * 24));
+              
+              if (daysDiff === 0) {
+                // Same day - keep streak
+                newStreak = prev.currentStreak || 1;
+              } else if (daysDiff === 1) {
+                // Yesterday - continue streak
+                newStreak = (prev.currentStreak || 0) + 1;
+              } else {
+                // More than 1 day - reset streak
+                newStreak = 1;
+              }
+            } else {
+              // First workout
+              newStreak = 1;
+            }
+            
+            if (newStreak > longestStreak) {
+              longestStreak = newStreak;
+            }
+            
+            // Update workout counts by month
+            const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const workoutCountsByMonth = {
+              ...(prev.workoutCountsByMonth || {}),
+              [monthKey]: ((prev.workoutCountsByMonth || {})[monthKey] || 0) + 1
+            };
+            
+            // Update favorite exercises
+            const exerciseCounts = new Map(prev.favoriteExercises?.map(e => [e.name, e.count]) || []);
+            exercises.forEach(ex => {
+              const currentCount = exerciseCounts.get(ex.exerciseName) || 0;
+              exerciseCounts.set(ex.exerciseName, currentCount + 1);
+            });
+            const favoriteExercises = Array.from(exerciseCounts.entries())
+              .map(([name, count]) => ({ name, count }))
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 20); // Keep top 20
+            
+            return {
+              ...prev,
+              totalWorkouts: (prev.totalWorkouts || 0) + 1,
+              currentStreak: newStreak,
+              longestStreak,
+              totalVolume: (prev.totalVolume || 0) + Math.round(totalVolume),
+              lastWorkoutDate: now.toISOString(),
+              workoutCountsByMonth,
+              favoriteExercises
+            };
+          });
+        } catch (e) {
+          console.error('Failed to save workout history:', e);
+        }
+      }
+    }
+    
     setWorkoutStartAt(null);
     setCurrentPlanIdx(0);
     setIsPaused(false);
     setPausedAt(null);
     // Clear current workout progress (keep history)
     setSetProgress({});
+    setAdditionalExercises([]);
     // Clear pause state from localStorage
     try {
       localStorage.removeItem(PAUSE_KEY);
     } catch(_) {}
     console.log('Workout ended - state cleared');
-  }, []);
+  }, [workoutStartAt, workoutPlan, additionalExercises, setProgress]);
 
   // Compute workout active state - always returns boolean
   const isWorkoutActive = workoutStartAt !== null;
@@ -426,6 +700,15 @@ export function WorkoutProvider({ children }) {
     return true;
   }, [savedWorkouts, buildPlanFromTemplate]);
 
+  // Export functions
+  const exportHistory = useCallback(() => {
+    return exportFullHistory(history);
+  }, [history]);
+
+  const getRetentionInfo = useCallback(() => {
+    return getRetentionStats();
+  }, []);
+
   // Expose helpers
   const value = useMemo(() => ({
     logs, addLog,
@@ -438,6 +721,8 @@ export function WorkoutProvider({ children }) {
     markSetComplete,
     markExerciseComplete,
     addAdditionalExercise,
+    updateAdditionalExercise,
+    removeAdditionalExercise,
     // New set tracking helpers
     setProgress,
     getCurrentSetNum,
@@ -449,6 +734,13 @@ export function WorkoutProvider({ children }) {
     setWorkoutStartAt,
     prefs,
     setPrefs,
+    // User profile & stats
+    userProfile,
+    setUserProfile,
+    userStats,
+    updateUserProfile: useCallback((updates) => {
+      setUserProfile(prev => ({ ...prev, ...updates }));
+    }, []),
     isOnline,
     history,
     // Program selection
@@ -474,7 +766,10 @@ export function WorkoutProvider({ children }) {
     getSavedWorkoutById,
     startWorkoutFromTemplate,
     buildPlanFromTemplate,
-  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout, getProgramDefinition, getBaseProgram, customPrograms, saveCustomProgram, resetCustomProgram, savedWorkouts, saveCustomWorkoutTemplate, deleteCustomWorkoutTemplate, getSavedWorkoutById, startWorkoutFromTemplate, buildPlanFromTemplate]);
+    // Data retention
+    exportHistory,
+    getRetentionInfo,
+  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, userProfile, userStats, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout, getProgramDefinition, getBaseProgram, customPrograms, saveCustomProgram, resetCustomProgram, savedWorkouts, saveCustomWorkoutTemplate, deleteCustomWorkoutTemplate, getSavedWorkoutById, startWorkoutFromTemplate, buildPlanFromTemplate, exportHistory, getRetentionInfo, updateAdditionalExercise, removeAdditionalExercise]);
 
   return (
     <WorkoutContext.Provider value={value}>{children}</WorkoutContext.Provider>

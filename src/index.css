@@ -7,16 +7,103 @@ html, body, #root {
   height: 100%;
 }
 
-body {
-  @apply antialiased;
-  background: #0b0f14; /* deep black background like the reference */
-  overscroll-behavior-y: none;
-  overflow-x: hidden;
+/* CSS Variables for Design System */
+:root {
+  /* Colors */
+  --bg-primary: #000000;
+  --bg-secondary: #0A0A0A;
+  --bg-card: rgba(255, 255, 255, 0.05);
+  --bg-glass: rgba(255, 255, 255, 0.05);
+  
+  --accent-primary: #00D9FF;
+  --accent-secondary: #9D4EDD;
+  --accent-success: #FF9500;
+  --accent-success-dark: #FF6B00;
+  
+  --text-primary: #FFFFFF;
+  --text-secondary: #A0A0A0;
+  --text-muted: #666666;
+  
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  
+  --status-success: #22C55E;
+  --status-error: #EF4444;
+  --status-warning: #F59E0B;
+  
+  /* Typography */
+  --font-size-page-title: 32px;
+  --font-size-section-header: 24px;
+  --font-size-card-title: 18px;
+  --font-size-body: 16px;
+  --font-size-secondary: 14px;
+  --font-size-small: 12px;
+  --font-size-tiny: 11px;
+  
+  /* Spacing */
+  --spacing-xs: 8px;
+  --spacing-sm: 16px;
+  --spacing-md: 24px;
+  --spacing-lg: 32px;
+  --spacing-xl: 40px;
+  --spacing-2xl: 48px;
+  
+  /* Border Radius */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
 }
 
-/* Fancy glow utility for the card */
+body {
+  @apply antialiased;
+  background: var(--bg-primary);
+  overscroll-behavior-y: none;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  color: var(--text-primary);
+}
+
+/* Global transitions for smooth interactions - selective only */
+button, a, [role="button"], input, select, textarea {
+  transition-property: background-color, border-color, color, opacity, box-shadow, transform;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+/* Faster transitions for button interactions */
+button, a, [role="button"] {
+  transition-duration: 100ms;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 300ms ease-out, transform 300ms ease-out;
+}
+
+.page-exit {
+  opacity: 1;
+}
+
+.page-exit-active {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: opacity 200ms ease-in, transform 200ms ease-in;
+}
+
+/* Updated glassmorphism utility */
 .pulse-glass {
-  @apply bg-white/10 backdrop-blur-xl border border-white/20;
+  background: var(--bg-glass);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-default);
 }
 
 .neon-text {
@@ -138,6 +225,140 @@ body {
   width: 8px; height: 8px; border-radius: 9999px;
   position: absolute; left: 50%; top: 50%;
   animation: burst 900ms ease-out forwards;
+}
+
+/* Button press animations */
+.btn-press {
+  transition: transform 100ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-press:active {
+  transform: scale(0.96);
+}
+
+/* Smooth fade in */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 200ms ease-out forwards;
+}
+
+/* Slide in from right */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.slide-in-right {
+  animation: slideInRight 250ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Slide in from left */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.slide-in-left {
+  animation: slideInLeft 250ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Scale in animation for sets */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.scale-in {
+  animation: scaleIn 200ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Loading spinner */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+/* Subtle pulse for recording */
+@keyframes subtlePulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.05);
+  }
+}
+
+.pulse-subtle {
+  animation: subtlePulse 2s ease-in-out infinite;
+}
+
+/* Focus glow for inputs */
+.focus-glow:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2);
+  border-color: rgba(34, 211, 238, 0.5);
+}
+
+/* Smooth hover states */
+.hover-lift:hover {
+  transform: translateY(-2px);
+}
+
+.hover-glow:hover {
+  box-shadow: 0 4px 12px rgba(34, 211, 238, 0.2);
+}
+
+/* Tap target minimum */
+.tap-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* PR Confetti Animation */
+@keyframes prConfetti {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(720deg);
+    opacity: 0;
+  }
 }
 
 

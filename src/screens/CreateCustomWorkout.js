@@ -3,6 +3,25 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
 import { EXERCISE_LIBRARY } from '../data/exerciseLibrary';
 
+// Custom SVG icons
+const EditIcon = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+);
+
+const PlayIcon = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="currentColor" viewBox="0 0 24 24">
+    <path d="M8 5v14l11-7z" />
+  </svg>
+);
+
+const SaveIcon = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+);
+
 const DEFAULT_SETS = [
   { weight: 60, reps: 10 },
   { weight: 60, reps: 10 },
@@ -31,6 +50,7 @@ export default function CreateCustomWorkout() {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [workoutName, setWorkoutName] = useState('');
   const [step, setStep] = useState('select');
+  const [savedWorkoutId, setSavedWorkoutId] = useState(null); // Track ID after saving to prevent duplicates
   const selectionRef = useRef(null);
 
   useEffect(() => {
@@ -40,6 +60,7 @@ export default function CreateCustomWorkout() {
         sets: clone(exercise.sets || exercise.setTargets || DEFAULT_SETS),
       })));
       setWorkoutName(editingTemplate.name || 'My Workout');
+      setSavedWorkoutId(editingTemplate.id || null); // Set saved ID when editing
       setStep('configure');
     }
   }, [editingTemplate]);
@@ -56,10 +77,40 @@ export default function CreateCustomWorkout() {
   const filteredLibrary = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return EXERCISE_LIBRARY;
-    return EXERCISE_LIBRARY.map((group) => ({
-      ...group,
-      exercises: group.exercises.filter((exercise) => exercise.name.toLowerCase().includes(term)),
-    })).filter((group) => group.exercises.length > 0);
+    
+    return EXERCISE_LIBRARY.map((group) => {
+      // Check if the search term matches the group label (muscle group)
+      const groupMatches = group.label.toLowerCase().includes(term) || group.id.toLowerCase().includes(term);
+      
+      // Filter exercises that match the search term
+      const matchingExercises = group.exercises.filter((exercise) => {
+        // Check exercise name
+        const nameMatches = exercise.name.toLowerCase().includes(term);
+        
+        // Check aliases if they exist
+        const aliasMatches = exercise.aliases?.some(alias => 
+          alias.toLowerCase().includes(term)
+        ) || false;
+        
+        // Include if either name or alias matches
+        return nameMatches || aliasMatches;
+      });
+      
+      // If group label matches OR there are matching exercises, include the group
+      if (groupMatches && matchingExercises.length === 0) {
+        // If group matches but no exercises match, show all exercises in that group
+        return {
+          ...group,
+          exercises: group.exercises
+        };
+      }
+      
+      // Otherwise, only include if there are matching exercises
+      return matchingExercises.length > 0 ? {
+        ...group,
+        exercises: matchingExercises
+      } : null;
+    }).filter((group) => group !== null && group.exercises.length > 0);
   }, [searchTerm]);
 
   const toggleGroup = (groupId) => {
@@ -93,11 +144,17 @@ export default function CreateCustomWorkout() {
     });
   };
 
+  const handleNumberInput = (value) => {
+    if (value === '') return '';
+    const cleaned = value.replace(/^0+/, '');
+    return cleaned === '' ? '' : parseInt(cleaned, 10);
+  };
+
   const updateSetField = (exerciseIndex, setIndex, field, value) => {
     setSelectedExercises((prev) => {
       const next = clone(prev);
-      const parsed = parseInt(value, 10);
-      next[exerciseIndex].sets[setIndex][field] = Number.isFinite(parsed) ? parsed : 0;
+      const processed = handleNumberInput(value);
+      next[exerciseIndex].sets[setIndex][field] = processed === '' ? 0 : processed;
       return next;
     });
   };
@@ -111,16 +168,6 @@ export default function CreateCustomWorkout() {
     });
   };
 
-  const copyPreviousSet = (exerciseIndex, setIndex) => {
-    setSelectedExercises((prev) => {
-      const next = clone(prev);
-      if (setIndex === 0) return prev;
-      const source = next[exerciseIndex].sets[setIndex - 1];
-      next[exerciseIndex].sets[setIndex] = { ...source };
-      return next;
-    });
-  };
-
   const removeSet = (exerciseIndex, setIndex) => {
     setSelectedExercises((prev) => {
       const next = clone(prev);
@@ -130,11 +177,66 @@ export default function CreateCustomWorkout() {
     });
   };
 
+  const adjustSetValue = (exerciseIndex, setIndex, field, delta) => {
+    setSelectedExercises((prev) => {
+      const next = clone(prev);
+      const current = next[exerciseIndex].sets[setIndex][field] || 0;
+      const minimum = field === 'reps' ? 1 : 0;
+      const nextValue = Math.max(minimum, current + delta);
+      next[exerciseIndex].sets[setIndex][field] = nextValue;
+      return next;
+    });
+  };
+
+  // Helper function to save workout (used by both Start and Save buttons)
+  const saveWorkoutTemplate = () => {
+    const name = workoutName.trim() || 'My Workout';
+    
+    // Determine the workout ID:
+    // 1. Use savedWorkoutId if we've already saved (prevents duplicates)
+    // 2. Use editingWorkoutId if editing existing workout
+    // 3. Generate new ID if this is a new workout
+    let workoutId = savedWorkoutId || editingWorkoutId || null;
+    
+    // If no ID exists, generate one upfront (matches format used in saveCustomWorkoutTemplate)
+    if (!workoutId) {
+      workoutId = `cw-${Date.now()}`;
+      setSavedWorkoutId(workoutId); // Track it to prevent duplicates on subsequent saves
+    }
+    
+    const template = {
+      id: workoutId,
+      name,
+      exercises: selectedExercises.map((exercise) => ({
+        name: exercise.name,
+        sets: exercise.sets,
+      })),
+    };
+    
+    // Save the workout (will update if ID exists, create new otherwise)
+    saveCustomWorkoutTemplate(template);
+    
+    return template;
+  };
+
   const handleStartWorkout = () => {
     if (selectedExercises.length === 0) {
       alert('Please add at least one exercise');
       return;
     }
+    
+    // Check if this is an update (editing existing workout) or new save
+    const isUpdate = !!editingWorkoutId;
+    
+    // Auto-save workout before starting
+    saveWorkoutTemplate();
+    
+    // Show toast notification
+    if (window?.__toast) {
+      window.__toast(isUpdate ? 'Workout updated and started' : 'Workout saved and started');
+    }
+    
+    // Then start the workout
     const plan = buildPlanFromTemplate({ exercises: selectedExercises });
     setWorkoutPlan(plan);
     navigate('/focus');
@@ -152,16 +254,8 @@ export default function CreateCustomWorkout() {
   };
 
   const confirmSaveWorkout = () => {
-    const name = workoutName.trim() || 'My Workout';
-    const template = {
-      id: editingWorkoutId || undefined,
-      name,
-      exercises: selectedExercises.map((exercise) => ({
-        name: exercise.name,
-        sets: exercise.sets,
-      })),
-    };
-    saveCustomWorkoutTemplate(template);
+    // Save workout (will use existing ID if already saved via Start Workout, preventing duplicates)
+    saveWorkoutTemplate();
     setShowSaveDialog(false);
     if (window?.__toast) window.__toast('Workout saved to library');
     navigate('/my-workouts');
@@ -300,68 +394,103 @@ export default function CreateCustomWorkout() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-2xl border border-white/10">
-              <div className="grid grid-cols-[60px,1fr,1fr,auto] bg-white/5 text-white/60 text-xs uppercase tracking-wide">
-                <div className="px-3 py-2">Set</div>
-                <div className="px-3 py-2">Weight (kg)</div>
-                <div className="px-3 py-2">Reps</div>
-                <div className="px-3 py-2 text-right">Actions</div>
-              </div>
-              {exercise.sets.map((set, setIndex) => (
-                <div key={setIndex} className="grid grid-cols-[60px,1fr,1fr,auto] border-t border-white/10 bg-white/5">
-                  <div className="px-3 py-3 text-white text-sm flex items-center">#{setIndex + 1}</div>
-                  <div className="px-3 py-2 flex items-center">
-                    <div className="w-full">
-                      <div className="text-white/50 text-[10px] uppercase tracking-wide mb-1">Weight (kg)</div>
-                      <input
-                        type="number"
-                        min="0"
-                        max="500"
-                        value={set.weight}
-                        onChange={(e) => updateSetField(exerciseIndex, setIndex, 'weight', e.target.value)}
-                        className="w-full h-10 rounded-xl bg-white/10 border border-white/20 text-white text-center focus:outline-none focus:border-cyan-400 transition"
-                      />
-                    </div>
-                  </div>
-                  <div className="px-3 py-2 flex items-center">
-                    <div className="w-full">
-                      <div className="text-white/50 text-[10px] uppercase tracking-wide mb-1">Reps</div>
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={set.reps}
-                        onChange={(e) => updateSetField(exerciseIndex, setIndex, 'reps', e.target.value)}
-                        className="w-full h-10 rounded-xl bg-white/10 border border-white/20 text-white text-center focus:outline-none focus:border-cyan-400 transition"
-                      />
-                    </div>
-                  </div>
-                  <div className="px-3 py-2 flex items-center justify-end gap-2">
-                    <button
-                      onClick={() => copyPreviousSet(exerciseIndex, setIndex)}
-                      disabled={setIndex === 0}
-                      className={`px-3 h-9 rounded-xl border text-xs ${setIndex === 0 ? 'border-white/20 text-white/30 cursor-not-allowed' : 'border-white/20 text-white hover:border-white/40'}`}
-                    >
-                      Copy
-                    </button>
+            <div className="space-y-3">
+              {exercise.sets.map((set, setIndex) => {
+                const isWeightMin = set.weight <= 0;
+                const isRepsMin = set.reps <= 1;
+                return (
+                  <div key={setIndex} className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white text-sm font-semibold">Set #{setIndex + 1}</span>
                     <button
                       onClick={() => removeSet(exerciseIndex, setIndex)}
                       disabled={exercise.sets.length <= 1}
-                      className={`px-3 h-9 rounded-xl border text-xs ${exercise.sets.length <= 1 ? 'border-white/20 text-white/30 cursor-not-allowed' : 'border-white/20 text-white hover:border-white/40'}`}
+                      className={`h-8 w-8 rounded-full border text-white text-base leading-none flex items-center justify-center transition ${
+                        exercise.sets.length <= 1
+                          ? 'border-white/20 text-white/30 cursor-not-allowed'
+                          : 'border-white/20 text-white hover:border-white/40'
+                      }`}
                     >
-                      Delete
+                      ×
                     </button>
                   </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-white/10 bg-white/10 p-3.5">
+                      <div className="text-white/50 text-[10px] uppercase tracking-[0.2em] mb-2.5 font-medium">Weight (kg)</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={isWeightMin}
+                          onClick={() => adjustSetValue(exerciseIndex, setIndex, 'weight', -1)}
+                          className={`h-10 w-10 rounded-full border text-white text-xl flex items-center justify-center transition flex-shrink-0 ${
+                            isWeightMin
+                              ? 'border-white/15 bg-white/5 text-white/30 cursor-not-allowed'
+                              : 'border-white/15 bg-white/10 hover:border-white/35 active:scale-[0.96]'
+                          }`}
+                        >
+                          −
+                        </button>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          min="0"
+                          max="500"
+                          step="1"
+                          value={set.weight || ''}
+                          onChange={(e) => updateSetField(exerciseIndex, setIndex, 'weight', e.target.value)}
+                          className="flex-1 h-12 rounded-xl bg-black/20 border border-white/10 text-white text-center text-xl font-bold focus:outline-none focus:border-cyan-400 transition min-w-0"
+                        />
+                        <button
+                          onClick={() => adjustSetValue(exerciseIndex, setIndex, 'weight', 1)}
+                          className="h-10 w-10 rounded-full border border-white/15 bg-white/10 text-white text-xl flex items-center justify-center transition hover:border-white/35 active:scale-[0.96] flex-shrink-0"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/10 p-3.5">
+                      <div className="text-white/50 text-[10px] uppercase tracking-[0.2em] mb-2.5 font-medium">Reps</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={isRepsMin}
+                          onClick={() => adjustSetValue(exerciseIndex, setIndex, 'reps', -1)}
+                          className={`h-10 w-10 rounded-full border text-white text-xl flex items-center justify-center transition flex-shrink-0 ${
+                            isRepsMin
+                              ? 'border-white/15 bg-white/5 text-white/30 cursor-not-allowed'
+                              : 'border-white/15 bg-white/10 hover:border-white/35 active:scale-[0.96]'
+                          }`}
+                        >
+                          −
+                        </button>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          min="1"
+                          max="50"
+                          step="1"
+                          value={set.reps || ''}
+                          onChange={(e) => updateSetField(exerciseIndex, setIndex, 'reps', e.target.value)}
+                          className="flex-1 h-12 rounded-xl bg-black/20 border border-white/10 text-white text-center text-xl font-bold focus:outline-none focus:border-cyan-400 transition min-w-0"
+                        />
+                        <button
+                          onClick={() => adjustSetValue(exerciseIndex, setIndex, 'reps', 1)}
+                          className="h-10 w-10 rounded-full border border-white/15 bg-white/10 text-white text-xl flex items-center justify-center transition hover:border-white/35 active:scale-[0.96] flex-shrink-0"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
+          </div>
 
-            <button
-              onClick={() => addSet(exerciseIndex)}
-              className="w-full h-10 rounded-2xl border border-dashed border-white/20 text-white/80 text-sm bg-white/5 active:scale-[0.99] transition"
-            >
-              + Add Set
-            </button>
+          <button
+            onClick={() => addSet(exerciseIndex)}
+            className="w-full h-11 rounded-2xl border border-dashed border-white/20 text-white/80 text-sm font-semibold bg-white/5 active:scale-[0.99] transition"
+          >
+            + Add Set
+          </button>
           </div>
         ))}
       </div>
@@ -369,12 +498,20 @@ export default function CreateCustomWorkout() {
   );
 
   return (
-    <div className="w-full max-w-[375px] px-4 pt-6 pb-[calc(180px+env(safe-area-inset-bottom))] space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-white text-3xl font-bold">Create Custom Workout</h1>
+    <div className="w-full max-w-[375px] px-4 pt-6 pb-[calc(180px+env(safe-area-inset-bottom))] space-y-5">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-green-400/30 to-emerald-400/20 flex items-center justify-center">
+            <EditIcon className="w-5 h-5 text-green-300" />
+          </div>
+          <div>
+            <h1 className="text-white text-2xl font-bold">{editingTemplate ? 'Edit Workout' : 'Create Custom Workout'}</h1>
+            <p className="text-white/60 text-sm">{editingTemplate ? 'Update your routine' : 'Build your own routine'}</p>
+          </div>
+        </div>
         <button
           onClick={() => navigate('/workout')}
-          className="px-4 h-9 rounded-full bg-white/10 text-white border border-white/10 text-sm"
+          className="px-4 h-9 rounded-xl bg-white/10 text-white border border-white/15 text-sm transition-transform hover:scale-105 active:scale-95"
         >
           Cancel
         </button>
@@ -393,12 +530,13 @@ export default function CreateCustomWorkout() {
                 <button
                   onClick={() => setStep('configure')}
                   disabled={selectedExercises.length === 0}
-                  className={`w-full h-12 rounded-2xl font-bold text-lg transition ${
+                  className={`w-full h-12 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${
                     selectedExercises.length > 0
-                      ? 'bg-white text-slate-900 active:scale-[0.99]'
+                      ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-white shadow-lg shadow-cyan-400/30 hover:scale-105 active:scale-95'
                       : 'bg-white/10 text-white/50 cursor-not-allowed'
                   }`}
                 >
+                  <PlayIcon className="w-5 h-5" />
                   Continue
                 </button>
                 {selectedExercises.length === 0 && (
@@ -420,20 +558,22 @@ export default function CreateCustomWorkout() {
                   </button>
                   <button
                     onClick={handleSaveWorkout}
-                    className="flex-1 h-12 rounded-2xl bg-white/10 text-white border border-cyan-400/40 font-medium active:scale-[0.99] transition"
+                    className="flex-1 h-12 rounded-xl bg-white/10 text-white border border-white/20 font-medium active:scale-95 transition-all hover:scale-105 flex items-center justify-center gap-2"
                   >
-                    Save Workout
+                    <SaveIcon className="w-4 h-4" />
+                    Save
                   </button>
                   <button
                     onClick={handleStartWorkout}
                     disabled={selectedExercises.length === 0}
-                    className={`flex-1 h-12 rounded-2xl font-bold text-lg transition ${
+                    className={`flex-1 h-12 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${
                       selectedExercises.length > 0
-                        ? 'bg-white text-slate-900 active:scale-[0.99]'
+                        ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-white shadow-lg shadow-cyan-400/30 hover:scale-105 active:scale-95'
                         : 'bg-white/10 text-white/50 cursor-not-allowed'
                     }`}
                   >
-                    Start Workout
+                    <PlayIcon className="w-5 h-5" />
+                    Start
                   </button>
                 </div>
                 {selectedExercises.length === 0 && (

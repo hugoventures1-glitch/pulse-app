@@ -1,15 +1,187 @@
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
+import { FLAT_EXERCISES } from '../data/exerciseLibrary';
+
+// Muscle Group Diagram Component
+function MuscleGroupDiagram({ stats }) {
+  // Filter out groups with 0% and sort by percentage (highest first)
+  const activeGroups = Object.entries(stats || {})
+    .filter(([_, percentage]) => percentage > 0)
+    .sort(([_, a], [__, b]) => b - a);
+
+  if (activeGroups.length === 0) {
+    return (
+      <div className="text-white/60 text-sm text-center py-4">
+        No muscle group data available
+      </div>
+    );
+  }
+
+  // Position mappings for labels (x, y coordinates and connection point)
+  const positions = {
+    chest: { x: 50, y: 28, connectX: 50, connectY: 40, label: 'Chest' },
+    shoulders: { x: 80, y: 20, connectX: 65, connectY: 30, label: 'Shoulders' },
+    back: { x: 20, y: 35, connectX: 35, connectY: 40, label: 'Back' },
+    arms: { x: 88, y: 45, connectX: 70, connectY: 55, label: 'Arms' },
+    core: { x: 50, y: 62, connectX: 50, connectY: 58, label: 'Core' },
+    legs: { x: 50, y: 92, connectX: 50, connectY: 75, label: 'Legs' }
+  };
+
+  return (
+    <div className="relative w-full" style={{ height: '280px' }}>
+      <svg
+        viewBox="0 0 100 100"
+        className="w-full h-full"
+        preserveAspectRatio="xMidYMid meet"
+      >
+        {/* Simple human body outline */}
+        {/* Head */}
+        <circle cx="50" cy="12" r="4" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)" strokeWidth="0.5" />
+        
+        {/* Torso */}
+        <ellipse cx="50" cy="40" rx="8" ry="12" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+        
+        {/* Arms */}
+        <ellipse cx="70" cy="48" rx="3" ry="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+        <ellipse cx="30" cy="48" rx="3" ry="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+        
+        {/* Legs */}
+        <ellipse cx="45" cy="72" rx="4" ry="10" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+        <ellipse cx="55" cy="72" rx="4" ry="10" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
+        
+        {/* Highlight active muscle groups with color intensity */}
+        {activeGroups.map(([group, percentage]) => {
+          const pos = positions[group];
+          if (!pos) return null;
+          
+          // Color intensity based on percentage
+          const intensity = Math.min(percentage / 50, 1); // Cap at 50% for max intensity
+          const opacity = 0.2 + (intensity * 0.3);
+          
+          // Highlight the body part area
+          if (group === 'chest') {
+            return (
+              <ellipse key={`highlight-${group}`} cx={pos.connectX} cy={pos.connectY} rx="6" ry="4" fill={`rgba(34, 211, 238, ${opacity})`} />
+            );
+          } else if (group === 'shoulders') {
+            return (
+              <g key={`highlight-${group}`}>
+                <circle cx="65" cy="30" r="3" fill={`rgba(34, 211, 238, ${opacity})`} />
+                <circle cx="35" cy="30" r="3" fill={`rgba(34, 211, 238, ${opacity})`} />
+              </g>
+            );
+          } else if (group === 'back') {
+            return (
+              <ellipse key={`highlight-${group}`} cx={pos.connectX} cy={pos.connectY} rx="6" ry="4" fill={`rgba(34, 211, 238, ${opacity})`} />
+            );
+          } else if (group === 'arms') {
+            return (
+              <g key={`highlight-${group}`}>
+                <ellipse cx="70" cy="55" rx="3" ry="8" fill={`rgba(34, 211, 238, ${opacity})`} />
+                <ellipse cx="30" cy="55" rx="3" ry="8" fill={`rgba(34, 211, 238, ${opacity})`} />
+              </g>
+            );
+          } else if (group === 'core') {
+            return (
+              <ellipse key={`highlight-${group}`} cx={pos.connectX} cy={pos.connectY} rx="5" ry="3" fill={`rgba(34, 211, 238, ${opacity})`} />
+            );
+          } else if (group === 'legs') {
+            return (
+              <g key={`highlight-${group}`}>
+                <ellipse cx="45" cy="75" rx="4" ry="10" fill={`rgba(34, 211, 238, ${opacity})`} />
+                <ellipse cx="55" cy="75" rx="4" ry="10" fill={`rgba(34, 211, 238, ${opacity})`} />
+              </g>
+            );
+          }
+          
+          return null;
+        })}
+        
+        {/* Labels with connecting lines */}
+        {activeGroups.map(([group, percentage]) => {
+          const pos = positions[group];
+          if (!pos) return null;
+          
+          return (
+            <g key={group}>
+              {/* Connecting line */}
+              <line
+                x1={pos.x}
+                y1={pos.y}
+                x2={pos.connectX}
+                y2={pos.connectY}
+                stroke="rgba(34, 211, 238, 0.4)"
+                strokeWidth="0.3"
+                strokeDasharray="0.5 0.5"
+              />
+              
+              {/* Percentage label */}
+              <circle
+                cx={pos.x}
+                cy={pos.y}
+                r="6"
+                fill="rgba(34, 211, 238, 0.2)"
+                stroke="rgba(34, 211, 238, 0.6)"
+                strokeWidth="0.5"
+              />
+              <text
+                x={pos.x}
+                y={pos.y + 0.8}
+                textAnchor="middle"
+                fontSize="3.5"
+                fill="rgba(34, 211, 238, 0.9)"
+                fontWeight="bold"
+              >
+                {percentage}%
+              </text>
+              
+              {/* Group name label */}
+              <text
+                x={pos.x}
+                y={pos.y + (pos.y < 50 ? -4 : 4)}
+                textAnchor="middle"
+                fontSize="2.5"
+                fill="rgba(255, 255, 255, 0.7)"
+              >
+                {pos.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
 
 export default function WorkoutDetails() {
   const navigate = useNavigate();
   const { workoutPlan = [], setProgress = {}, workoutStartAt, additionalExercises = [], endWorkout } = useWorkout();
 
-  const { exerciseList, totals } = useMemo(() => {
+  const { exerciseList, totals, muscleGroupStats } = useMemo(() => {
     const exercises = [];
     let totalSets = 0;
     let totalVolume = 0;
+    
+    // Map to track volume per muscle group
+    const muscleGroupVolume = {
+      chest: 0,
+      back: 0,
+      legs: 0,
+      shoulders: 0,
+      arms: 0,
+      core: 0
+    };
+
+    // Helper function to find muscle group for an exercise
+    const findMuscleGroup = (exerciseName) => {
+      const normalizedName = exerciseName.toLowerCase().trim();
+      const exercise = FLAT_EXERCISES.find(ex => 
+        ex.name.toLowerCase() === normalizedName ||
+        ex.aliases?.some(alias => alias.toLowerCase() === normalizedName)
+      );
+      return exercise?.groupId || null;
+    };
 
     // Process planned exercises
     workoutPlan.forEach(ex => {
@@ -28,6 +200,12 @@ export default function WorkoutDetails() {
           exerciseVolume += r * w;
         });
         totalVolume += exerciseVolume;
+
+        // Add to muscle group volume
+        const muscleGroup = findMuscleGroup(ex.name);
+        if (muscleGroup && muscleGroupVolume.hasOwnProperty(muscleGroup)) {
+          muscleGroupVolume[muscleGroup] += exerciseVolume;
+        }
 
         // Get all sets logged for this exercise
         const sets = values.map((v, i) => ({
@@ -52,6 +230,12 @@ export default function WorkoutDetails() {
         totalSets += ex.sets;
         totalVolume += exerciseVolume;
 
+        // Add to muscle group volume
+        const muscleGroup = findMuscleGroup(ex.name);
+        if (muscleGroup && muscleGroupVolume.hasOwnProperty(muscleGroup)) {
+          muscleGroupVolume[muscleGroup] += exerciseVolume;
+        }
+
         exercises.push({
           name: ex.name,
           sets: Array.from({ length: ex.sets }, (_, i) => ({
@@ -69,6 +253,15 @@ export default function WorkoutDetails() {
     const durationMs = workoutStartAt ? Date.now() - workoutStartAt : 0;
     const durationMin = Math.max(1, Math.round(durationMs / 60000));
 
+    // Calculate percentages for each muscle group
+    const muscleGroupPercentages = {};
+    Object.keys(muscleGroupVolume).forEach(group => {
+      const percentage = totalVolume > 0 
+        ? Math.round((muscleGroupVolume[group] / totalVolume) * 100) 
+        : 0;
+      muscleGroupPercentages[group] = percentage;
+    });
+
     return {
       exerciseList: exercises,
       totals: {
@@ -76,7 +269,8 @@ export default function WorkoutDetails() {
         volume: totalVolume,
         duration: durationMin,
         exercises: exercises.length
-      }
+      },
+      muscleGroupStats: muscleGroupPercentages
     };
   }, [workoutPlan, setProgress, workoutStartAt, additionalExercises]);
 
@@ -91,6 +285,14 @@ export default function WorkoutDetails() {
           Done
         </button>
       </div>
+
+      {/* Muscle Group Diagram */}
+      {exerciseList.length > 0 && (
+        <div className="pulse-glass rounded-3xl p-5 mb-6">
+          <h3 className="text-white/90 text-lg font-semibold mb-4 text-center">Muscle Groups Worked</h3>
+          <MuscleGroupDiagram stats={muscleGroupStats} />
+        </div>
+      )}
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 gap-3 mb-6">

@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
 
 const IconHome = (props) => (
@@ -30,12 +30,27 @@ const IconSettings = (props) => (
   </svg>
 );
 
+// Custom SVG icons
+const PlayIcon = (props) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <path d="M8 5v14l11-7z" />
+  </svg>
+);
+
+const ClockIcon = (props) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </svg>
+);
+
 export default function BottomNav() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isWorkoutActive } = useWorkout();
-  const base = "dock-seg active:scale-[0.98] transition border border-white/10 bg-white/5";
-  const active = "bg-white text-slate-900 border-transparent";
+  
   const iconClass = "w-6 h-6";
+  const isActive = (path) => location.pathname === path;
 
   const handleWorkoutClick = (e) => {
     e.preventDefault();
@@ -47,35 +62,130 @@ export default function BottomNav() {
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-20">
-      <div className="mx-auto w-full max-w-[375px] px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-2">
-        <div className="dock p-2 grid grid-cols-5 gap-2 items-center">
-          <NavLink to="/" end className={({isActive})=>`${base} ${isActive? active : 'text-white/90'}`}>
-            <IconHome className={iconClass} />
-          </NavLink>
-          <NavLink to="/progress" className={({isActive})=>`${base} ${isActive? active : 'text-white/90'}`}>
-            <IconChart className={iconClass} />
-          </NavLink>
-          {/* Center START pill */}
+    <div className="fixed inset-x-0 bottom-0 z-20 flex items-end justify-center pb-4" style={{ paddingBottom: 'calc(16px + env(safe-area-inset-bottom))' }}>
+      {/* Background with blur and border - Floating */}
+      <div style={{ 
+        background: 'rgba(0, 0, 0, 0.95)', 
+        backdropFilter: 'blur(20px)',
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        boxShadow: '0 4px 24px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05)',
+        borderRadius: '18px',
+        width: 'calc(100% - 32px)',
+        maxWidth: 'calc(375px - 32px)',
+      }}>
+        <div className="mx-auto px-4 py-3">
+          <div className="flex items-center justify-around relative" style={{ height: '56px' }}>
+          {/* Home */}
           <button
-            onClick={handleWorkoutClick}
-            className={`h-12 flex items-center justify-center rounded-full col-span-1 font-semibold px-5 shadow-md relative ${
-              isWorkoutActive 
-                ? 'bg-emerald-500 text-white' 
-                : 'bg-white text-slate-900'
-            }`}
+            onClick={() => navigate('/')}
+            className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
+            style={{ 
+              minWidth: '44px', 
+              minHeight: '44px',
+              padding: '8px'
+            }}
           >
-            {isWorkoutActive ? 'RESUME' : 'START'}
-            {isWorkoutActive && (
-              <span className="absolute -top-1 -right-1 w-3 h-3 bg-cyan-400 rounded-full border-2 border-black/20"></span>
+            <IconHome 
+              className={iconClass} 
+              style={{ 
+                color: isActive('/') ? '#00D9FF' : '#666666',
+                filter: isActive('/') ? 'drop-shadow(0 0 8px rgba(0, 217, 255, 0.5))' : 'none'
+              }}
+            />
+            {isActive('/') && (
+              <span className="text-cyan-400 text-xs font-medium" style={{ fontSize: '11px' }}>Home</span>
             )}
           </button>
-          <NavLink to="/history" className={({isActive})=>`${base} ${isActive? active : 'text-white/90'}`}>
-            <IconHistory className={iconClass} />
-          </NavLink>
-          <NavLink to="/settings" className={({isActive})=>`${base} ${isActive? active : 'text-white/90'}`}>
-            <IconSettings className={iconClass} />
-          </NavLink>
+          
+          {/* History */}
+          <button
+            onClick={() => navigate('/history')}
+            className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
+            style={{ 
+              minWidth: '44px', 
+              minHeight: '44px',
+              padding: '8px'
+            }}
+          >
+            <IconChart 
+              className={iconClass}
+              style={{ 
+                color: isActive('/history') ? '#00D9FF' : '#666666',
+                filter: isActive('/history') ? 'drop-shadow(0 0 8px rgba(0, 217, 255, 0.5))' : 'none'
+              }}
+            />
+            {isActive('/history') && (
+              <span className="text-cyan-400 text-xs font-medium" style={{ fontSize: '11px' }}>History</span>
+            )}
+          </button>
+          
+          {/* Center START Button - Slightly larger but balanced */}
+          <button
+            onClick={handleWorkoutClick}
+            className="absolute left-1/2 -translate-x-1/2 -top-6 flex items-center justify-center rounded-full font-bold text-white shadow-xl transition-all hover:scale-110 active:scale-95"
+            style={{
+              width: '56px',
+              height: '56px',
+              background: isWorkoutActive 
+                ? 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)'
+                : 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+              boxShadow: isWorkoutActive
+                ? '0 6px 24px rgba(34, 197, 94, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)'
+                : '0 6px 24px rgba(255, 149, 0, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)',
+              border: '2px solid rgba(255, 255, 255, 0.2)'
+            }}
+          >
+            {isWorkoutActive ? (
+              <PlayIcon className="w-7 h-7" />
+            ) : (
+              <span style={{ fontSize: '13px', fontWeight: 700 }}>START</span>
+            )}
+          </button>
+          
+          {/* Timer/Recent */}
+          <button
+            onClick={() => navigate('/progress')}
+            className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
+            style={{ 
+              minWidth: '44px', 
+              minHeight: '44px',
+              padding: '8px'
+            }}
+          >
+            <ClockIcon 
+              className={iconClass}
+              style={{ 
+                color: isActive('/progress') ? '#00D9FF' : '#666666',
+                filter: isActive('/progress') ? 'drop-shadow(0 0 8px rgba(0, 217, 255, 0.5))' : 'none'
+              }}
+            />
+            {isActive('/progress') && (
+              <span className="text-cyan-400 text-xs font-medium" style={{ fontSize: '11px' }}>Progress</span>
+            )}
+          </button>
+          
+          {/* Settings */}
+          <button
+            onClick={() => navigate('/settings')}
+            className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
+            style={{ 
+              minWidth: '44px', 
+              minHeight: '44px',
+              padding: '8px'
+            }}
+          >
+            <IconSettings 
+              className={iconClass}
+              style={{ 
+                color: isActive('/settings') ? '#00D9FF' : '#666666',
+                filter: isActive('/settings') ? 'drop-shadow(0 0 8px rgba(0, 217, 255, 0.5))' : 'none'
+              }}
+            />
+            {isActive('/settings') && (
+              <span className="text-cyan-400 text-xs font-medium" style={{ fontSize: '11px' }}>Settings</span>
+            )}
+          </button>
+          </div>
         </div>
       </div>
     </div>
