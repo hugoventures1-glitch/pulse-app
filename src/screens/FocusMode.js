@@ -234,6 +234,9 @@ export default function FocusMode() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  const recordingStartTimeRef = useRef(null); // Track when recording started
+  const isRecordingActiveRef = useRef(false); // Prevent immediate stop
+  const clickDebounceRef = useRef(null); // Prevent double-click on mobile
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [pendingEditValues, setPendingEditValues] = useState(null);
   const [pendingEditMode, setPendingEditMode] = useState(false);
@@ -579,19 +582,48 @@ export default function FocusMode() {
         }
       },
       onStart: () => {
+        // Mark as active immediately
+        isRecordingActiveRef.current = true;
+        recordingStartTimeRef.current = Date.now();
         setListening(true);
       },
       onEnd: () => {
-        setListening(false);
+        // Add minimum delay before allowing stop to prevent immediate toggle
+        const elapsed = recordingStartTimeRef.current ? Date.now() - recordingStartTimeRef.current : 0;
+        const minRecordingTime = 500; // Minimum 500ms before allowing stop (prevents accidental toggles)
+        
+        if (elapsed < minRecordingTime) {
+          // If stopped too quickly (e.g., immediate browser error), wait then update state
+          setTimeout(() => {
+            isRecordingActiveRef.current = false;
+            recordingStartTimeRef.current = null;
+            setListening(false);
+          }, minRecordingTime - elapsed);
+        } else {
+          // Normal stop - update state immediately
+          isRecordingActiveRef.current = false;
+          recordingStartTimeRef.current = null;
+          setListening(false);
+        }
       },
       onError: () => {
+        isRecordingActiveRef.current = false;
+        recordingStartTimeRef.current = null;
         setListening(false);
       }
     });
     ctrlRef.current = ctl;
 
     return () => {
+      // Cleanup: stop any active recording and clear timers
       try {
+        if (clickDebounceRef.current) {
+          clearTimeout(clickDebounceRef.current);
+          clickDebounceRef.current = null;
+        }
+        if (isRecordingActiveRef.current) {
+          ctrlRef.current?.stop();
+        }
         recRef.current?.stop();
       } catch (_) {}
     };
@@ -938,11 +970,49 @@ export default function FocusMode() {
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (listening) {
-              ctrlRef.current?.stop();
-            } else {
-              ctrlRef.current?.start();
+            
+            // Debounce to prevent double-firing on mobile
+            if (clickDebounceRef.current) {
+              clearTimeout(clickDebounceRef.current);
             }
+            
+            clickDebounceRef.current = setTimeout(() => {
+              // Use ref to check actual state (more reliable than state variable on mobile)
+              if (isRecordingActiveRef.current) {
+                // Currently recording - stop it
+                const elapsed = recordingStartTimeRef.current ? Date.now() - recordingStartTimeRef.current : 0;
+                const minRecordingTime = 500; // Minimum 500ms before allowing stop (prevents accidental toggles)
+                
+                if (elapsed < minRecordingTime) {
+                  // Too soon to stop, wait a bit
+                  setTimeout(() => {
+                    if (isRecordingActiveRef.current) {
+                      ctrlRef.current?.stop();
+                    }
+                  }, minRecordingTime - elapsed);
+                } else {
+                  ctrlRef.current?.stop();
+                }
+              } else {
+                // Not recording - start it
+                // Only start if not already starting (double-check)
+                if (!isRecordingActiveRef.current) {
+                  isRecordingActiveRef.current = true;
+                  recordingStartTimeRef.current = Date.now();
+                  ctrlRef.current?.start();
+                }
+              }
+              
+              clickDebounceRef.current = null;
+            }, 100); // 100ms debounce to prevent double-clicks on mobile
+          }}
+          onTouchStart={(e) => {
+            // Prevent default touch behavior that might conflict
+            e.stopPropagation();
+          }}
+          onMouseDown={(e) => {
+            // Prevent default mouse behavior
+            e.stopPropagation();
           }}
           className={`block w-full rounded-2xl p-8 text-left backdrop-blur-md active:scale-[0.99] transition select-none ${
             listening 
@@ -953,6 +1023,7 @@ export default function FocusMode() {
             userSelect: 'none', 
             touchAction: 'manipulation', 
             WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none',
             boxShadow: listening 
               ? '0 4px 16px rgba(239, 68, 68, 0.3)' 
               : '0 4px 16px rgba(249, 115, 22, 0.3)'

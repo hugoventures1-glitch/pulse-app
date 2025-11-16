@@ -50,6 +50,11 @@ export function attachPressHold(recognizer, {
     isActive = true;
     buffer = '';
     isManualStop = false;
+    // Clear any pending safety timers to prevent immediate stop
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
     onStart && onStart();
   };
   const finalize = () => {
@@ -79,6 +84,21 @@ export function attachPressHold(recognizer, {
   };
   recognizer.onerror = (ev) => {
     if (safetyTimer) { clearTimeout(safetyTimer); safetyTimer = null; }
+    
+    // Some mobile browsers fire immediate "no-speech" errors right after start
+    // If this happens very quickly (< 500ms), ignore it as it's likely a false positive
+    const errorName = ev?.error || '';
+    const timeSinceStart = startTime ? Date.now() - startTime : Infinity;
+    const isQuickError = timeSinceStart < 500;
+    
+    // Ignore "no-speech" errors that happen immediately after start (mobile browser quirk)
+    if (errorName === 'no-speech' && isQuickError && !isManualStop) {
+      // Don't reset state - might be a false positive
+      // Continue recording and let user speak
+      return;
+    }
+    
+    // Real error or manual stop - reset state
     isActive = false;
     isManualStop = false;
     onError && onError(ev);
@@ -98,19 +118,46 @@ export function attachPressHold(recognizer, {
   };
 
   const start = () => {
+    // Prevent starting if already active (mobile browser issue)
+    if (isActive) {
+      return;
+    }
+    
     isManualStop = false;
     try {
-      if (isActive) { 
-        try { recognizer.abort(); } catch(_) {}
-      }
-      startTime = Date.now();
-      recognizer.start();
-      safetyTimer = setTimeout(() => {
-        if (!isManualStop) {
-          try { recognizer.stop(); } catch(_){}
-          try { recognizer.abort(); } catch(_){}
+      // Abort any existing recognition first
+      try { 
+        if (recognizer.state === 'listening' || recognizer.state === 'starting') {
+          recognizer.abort(); 
         }
-      }, 12000);
+      } catch(_) {}
+      
+      // Small delay to ensure previous recognition is fully stopped (mobile fix)
+      // This prevents the browser from immediately stopping recognition after start
+      setTimeout(() => {
+        try {
+          // Double-check not already active (state might have changed)
+          if (!isActive && !isManualStop) {
+            startTime = Date.now();
+            recognizer.start();
+            // Reset safety timer
+            safetyTimer = setTimeout(() => {
+              if (!isManualStop && isActive) {
+                try { recognizer.stop(); } catch(_){}
+                try { recognizer.abort(); } catch(_){}
+              }
+            }, 12000);
+          }
+        } catch (e) {
+          // If error starting (e.g., already started), reset state
+          isActive = false;
+          startTime = null;
+          if (safetyTimer) {
+            clearTimeout(safetyTimer);
+            safetyTimer = null;
+          }
+        }
+      }, 150); // 150ms delay to prevent immediate stop on mobile browsers
     } catch (e) {
       startTime = null;
       if (safetyTimer) {
