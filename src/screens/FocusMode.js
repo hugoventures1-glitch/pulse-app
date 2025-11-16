@@ -56,10 +56,14 @@ function normalizeSpokenNumbers(transcript) {
 }
 
 // Exercise detection function with fuzzy matching - finds exercise names in transcription
-function findExerciseInText(transcription, workoutExercises, allExercises, exerciseAliasMap) {
+// isQuickStartMode: if true, allows matching against unknown exercises and auto-saving
+function findExerciseInText(transcription, workoutExercises, allExercises, exerciseAliasMap, isQuickStartMode = false) {
   if (!transcription || typeof transcription !== 'string') return null;
   
   const text = transcription.toLowerCase().trim();
+  
+  // For non-Quick Start modes, use a higher threshold for more restrictive matching
+  const fuzzyThreshold = isQuickStartMode ? 0.3 : 0.5;
   
   // STEP 1: Check workout exercises first (priority)
   let bestWorkoutMatch = null;
@@ -70,7 +74,7 @@ function findExerciseInText(transcription, workoutExercises, allExercises, exerc
     const name = (typeof ex === 'string' ? ex : ex?.name) || '';
     if (!name) continue;
     
-    const matchedExercise = findBestMatch(text, [{ name, aliases: [] }], 0.3);
+    const matchedExercise = findBestMatch(text, [{ name, aliases: [] }], fuzzyThreshold);
     if (matchedExercise) {
       const score = 1.0; // Workout exercises get highest priority
       if (score > bestWorkoutScore) {
@@ -85,7 +89,8 @@ function findExerciseInText(transcription, workoutExercises, allExercises, exerc
   }
   
   // STEP 2: Check full library (core + custom) using fuzzy matching
-  const matchedExercise = findBestMatch(text, allExercises, 0.3);
+  // In non-Quick Start modes, this only matches against existing exercises
+  const matchedExercise = findBestMatch(text, allExercises, fuzzyThreshold);
   
   if (matchedExercise) {
     // Check if this exercise is in the workout
@@ -97,10 +102,15 @@ function findExerciseInText(transcription, workoutExercises, allExercises, exerc
     if (inWorkoutIdx !== -1) {
       return { name: matchedExercise.name, inWorkout: true, index: inWorkoutIdx, score: 0.8 };
     } else {
-      return { name: matchedExercise.name, inWorkout: false, score: 0.8 };
+      // Only return library exercises (not in workout) in Quick Start mode
+      // In other modes, only allow exercises that are already in the library
+      if (isQuickStartMode || exerciseExists(matchedExercise.name)) {
+        return { name: matchedExercise.name, inWorkout: false, score: 0.8 };
+      }
     }
   }
   
+  // In non-Quick Start modes, don't return unknown exercises
   return null;
 }
 
@@ -368,11 +378,13 @@ export default function FocusMode() {
           }
           
           // STEP 2: Detect exercise in transcription BEFORE parsing
+          // Pass isQuickStart mode to control whether unknown exercises can be detected
           const detected = findExerciseInText(
             normalizedTranscript,
             workoutExerciseNames,
             allExercises,
-            exerciseAliasMap
+            exerciseAliasMap,
+            callbacks.isQuickStart // Only allow new exercise detection in Quick Start mode
           );
           
           // STEP 3: Handle detected exercise based on mode and workout status
@@ -393,54 +405,61 @@ export default function FocusMode() {
               // Continue with parsing using detected exercise...
             } else {
               // Exercise NOT in workout - found in library
-              // Auto-save to custom exercises if it doesn't exist
-              if (!exerciseExists(detected.name)) {
-                autoSaveExerciseFromVoice(detected.name);
-              }
-              
-              // Show add modal for both regular and Quick Start mode
-              setPendingExerciseAdd({
-                exerciseName: detected.name,
-                transcription: normalizedTranscript,
-                isQuickStart: callbacks.isQuickStart,
-                currentContext: {
+              // Only show add modal in Quick Start mode
+              if (callbacks.isQuickStart) {
+                // Auto-save to custom exercises if it doesn't exist (Quick Start only)
+                if (!exerciseExists(detected.name)) {
+                  autoSaveExerciseFromVoice(detected.name);
+                }
+                
+                // Show add modal for Quick Start mode
+                setPendingExerciseAdd({
+                  exerciseName: detected.name,
+                  transcription: normalizedTranscript,
+                  isQuickStart: true,
+                  currentContext: {
             currentExercise: currentEx?.name || null,
             lastWeight: null,
             lastReps: null,
             targetWeight: currentEx?.weight || null,
             targetReps: currentEx?.reps || null
-                }
-              });
-              setIsProcessingVoice(false); // Clear loading while waiting for confirmation
-              // Don't proceed with parsing - wait for user to confirm
-              return;
-            }
-          } else {
-            // No exercise detected in transcription
-            // Check if transcription looks like it contains an exercise name
-            // (has words that might be exercise names)
-            const exerciseKeywords = /(bench|squat|deadlift|press|curl|row|pull|push|fly|raise|extension|dip|crunch|plank|lung|lateral|tricep|bicep|shoulder|chest|back|leg|arm|core)/i;
-            const mightContainExercise = exerciseKeywords.test(normalizedTranscript);
-            
-            if (mightContainExercise) {
-              // Try to extract exercise name from Claude parsing result
-              // If Claude can extract an exercise name, auto-save it
-              // This will be handled in the parsing step below
-            } else {
-              // No exercise mentioned - use current exercise (only if in regular mode)
-              if (!currentEx && !callbacks.isQuickStart) {
-                setError('No exercise active. Please specify an exercise name.');
+                  }
+                });
+                setIsProcessingVoice(false); // Clear loading while waiting for confirmation
+                // Don't proceed with parsing - wait for user to confirm
+                return;
+              } else {
+                // In non-Quick Start modes, ignore exercises not in the workout plan
+                setError(`Exercise "${detected.name}" is not in this workout. Please use an exercise from your workout plan.`);
+                speakMessage('Exercise not in workout');
                 setIsProcessingVoice(false);
                 return;
               }
             }
-            
-            // No exercise mentioned - use current exercise (only if in regular mode)
-            if (!currentEx && !callbacks.isQuickStart) {
-              setError('No exercise active. Please specify an exercise name.');
-              setIsProcessingVoice(false);
-              return;
+          } else {
+            // No exercise detected in transcription
+            // In non-Quick Start modes, require a valid exercise from the workout plan
+            if (!callbacks.isQuickStart) {
+              // Check if transcription looks like it contains an exercise name
+              const exerciseKeywords = /(bench|squat|deadlift|press|curl|row|pull|push|fly|raise|extension|dip|crunch|plank|lung|lateral|tricep|bicep|shoulder|chest|back|leg|arm|core)/i;
+              const mightContainExercise = exerciseKeywords.test(normalizedTranscript);
+              
+              if (mightContainExercise) {
+                setError('Exercise not recognized. Please use an exercise from your workout plan.');
+                speakMessage('Exercise not in workout');
+                setIsProcessingVoice(false);
+                return;
+              }
+              
+              // No exercise mentioned - use current exercise (only if in regular mode)
+              if (!currentEx) {
+                setError('No exercise active. Please specify an exercise name from your workout plan.');
+                setIsProcessingVoice(false);
+                return;
+              }
             }
+            // In Quick Start mode, continue processing even if no exercise detected
+            // (will be handled by Claude parsing)
           }
           
           // STEP 4: Build context for parsing
@@ -517,8 +536,16 @@ export default function FocusMode() {
             // Use the exercise we determined, not what Claude might return
             result.exercise = exerciseNameForParsing;
           } else if (result.exercise && !exerciseExists(result.exercise)) {
-            // Claude extracted an exercise name that doesn't exist - auto-save it
-            autoSaveExerciseFromVoice(result.exercise);
+            // Claude extracted an exercise name that doesn't exist
+            // Only auto-save in Quick Start mode
+            if (callbacks.isQuickStart) {
+              autoSaveExerciseFromVoice(result.exercise);
+            } else {
+              // In non-Quick Start modes, reject unknown exercises
+              setError(`Exercise "${result.exercise}" is not recognized. Please use an exercise from your workout plan.`);
+              setIsProcessingVoice(false);
+              return;
+            }
           }
 
           setAiParsed(result);
