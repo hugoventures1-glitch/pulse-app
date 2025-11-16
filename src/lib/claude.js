@@ -20,6 +20,7 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     const targetWeight = context.targetWeight || null;
     const targetReps = context.targetReps || null;
     const lastLoggedSet = context.lastLoggedSet || null;
+    const isFirstSet = context.isFirstSet !== undefined ? context.isFirstSet : false;
 
     let reps;
     let weight;
@@ -148,7 +149,12 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
       } else if (weight === undefined && hasMemory && lastLoggedSet) {
         weight = lastLoggedSet.weight ?? weight;
         if (weight !== undefined) notes.push('memory_weight');
-      } else if (weight === undefined && targetWeight !== null) {
+      } else if (weight === undefined && !isFirstSet && lastWeight !== null) {
+        // For subsequent sets, use last logged weight from same exercise
+        weight = lastWeight;
+        notes.push('using_last_weight');
+      } else if (weight === undefined && targetWeight !== null && !isFirstSet) {
+        // Only use target weight for subsequent sets, not first set
         weight = targetWeight;
         notes.push('using_target_weight');
       }
@@ -159,18 +165,33 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
     } else if (reps === undefined && hasMemory && lastLoggedSet) {
       reps = lastLoggedSet.reps ?? reps;
       if (reps !== undefined) notes.push('memory_reps');
-    } else if (reps === undefined && targetReps !== null) {
+    } else if (reps === undefined && !isFirstSet && lastReps !== null) {
+      // For subsequent sets, use last logged reps from same exercise
+      reps = lastReps;
+      notes.push('using_last_reps');
+    } else if (reps === undefined && targetReps !== null && !isFirstSet) {
+      // Only use target reps for subsequent sets, not first set
       reps = targetReps;
       notes.push('using_target_reps');
     }
 
+    // Check if we need confirmation for missing reps
+    // On first set: always ask if missing
+    // On subsequent sets: we've already tried to fill from context above
+    // Only ask for confirmation if reps is still undefined (couldn't fill from context)
     if (reps === undefined || reps <= 0) {
+      // Always ask for confirmation if reps is missing
       needsConfirmation.push('missing_reps');
     } else if (reps > 50) {
       needsConfirmation.push('high_reps');
     }
 
+    // Check if we need confirmation for missing weight
+    // On first set: always ask if missing
+    // On subsequent sets: we've already tried to fill from context above
+    // Only ask for confirmation if weight is still undefined (couldn't fill from context)
     if (!isBodyweight && (weight === undefined || weight < 0)) {
+      // Always ask for confirmation if weight is missing
       needsConfirmation.push('missing_weight');
     }
 

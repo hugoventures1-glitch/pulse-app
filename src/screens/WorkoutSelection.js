@@ -172,7 +172,7 @@ export default function WorkoutSelection() {
             if (window.__toast) window.__toast('You have a paused workout. Resume or end it first.');
             return;
           }
-          navigate('/focus', { state: { mode: 'quick' } });
+          navigate('/workout-preview', { state: { mode: 'quick' } });
         }}
         className={`group relative w-full pulse-glass rounded-3xl p-7 border-2 border-orange-400/30 backdrop-blur-xl transition-all duration-200 hover:scale-[1.01] active:scale-[0.99] ${isPaused ? 'opacity-60' : ''}`}
         style={{

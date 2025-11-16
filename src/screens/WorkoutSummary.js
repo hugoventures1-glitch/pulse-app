@@ -88,9 +88,38 @@ export default function WorkoutSummary() {
           </div>
         </div>
 
-        <div className="grid gap-2">
-          <button className="h-12 rounded-2xl bg-white text-slate-900 font-semibold" onClick={()=>navigate('/workout-details')}>View Details</button>
-          <button className="h-12 rounded-2xl bg-white/5 text-white border border-white/10" onClick={()=>{ endWorkout(); navigate('/'); }}>Done</button>
+        <div className="grid gap-4 mb-6">
+          <button 
+            className="h-12 rounded-2xl bg-white/10 text-white border border-white/20 font-medium transition-all hover:bg-white/15 active:scale-95" 
+            onClick={()=>navigate('/workout-details')}
+          >
+            View Details
+          </button>
+          
+          {/* Prominent Done Button */}
+          <button 
+            className="w-full rounded-2xl text-white font-bold text-xl shadow-2xl transition-all hover:scale-105 active:scale-95 relative overflow-hidden" 
+            onClick={()=>{ endWorkout(); navigate('/'); }}
+            style={{ 
+              height: '64px',
+              background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+              borderRadius: '20px',
+              boxShadow: '0 8px 32px rgba(255, 149, 0, 0.5), 0 0 0 2px rgba(255, 255, 255, 0.2)',
+              border: '2px solid rgba(255, 255, 255, 0.3)'
+            }}
+          >
+            <div className="flex items-center justify-center gap-3">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              <span style={{ fontSize: '20px', fontWeight: 700, letterSpacing: '0.5px' }}>DONE</span>
+            </div>
+          </button>
+        </div>
+        
+        {/* Helper text - More prominent */}
+        <div className="text-center mb-4 px-4">
+          <p className="text-white/80 text-base font-medium">Tap "DONE" to finish and return home</p>
         </div>
       </div>
     </div>

@@ -322,11 +322,11 @@ export default function HomeDashboard() {
           </div>
           <div className="text-white text-3xl font-bold mb-1" style={{ fontSize: '32px' }}>
             {totalWorkouts}
-          </div>
+        </div>
           {thisMonthWorkouts > 0 && (
             <div className="text-white/50 text-xs" style={{ fontSize: '12px' }}>
               {thisMonthWorkouts} this month
-            </div>
+      </div>
         )}
       </div>
 
@@ -424,7 +424,7 @@ export default function HomeDashboard() {
                         e.stopPropagation();
                         if (startWorkoutFromTemplate(workout.id)) {
                           if (window?.__toast) window.__toast('Workout loaded');
-                          navigate('/focus');
+                          navigate('/workout-preview', { state: { workoutId: workout.id } });
                         } else if (window?.__toast) {
                           window.__toast('Workout could not be loaded');
                         }

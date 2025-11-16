@@ -236,10 +236,15 @@ export default function CreateCustomWorkout() {
       window.__toast(isUpdate ? 'Workout updated and started' : 'Workout saved and started');
     }
     
-    // Then start the workout
+    // Then navigate to workout preview
     const plan = buildPlanFromTemplate({ exercises: selectedExercises });
     setWorkoutPlan(plan);
-    navigate('/focus');
+    navigate('/workout-preview', { 
+      state: { 
+        workoutId: savedWorkoutId || undefined,
+        workoutName: workoutName || 'My Workout'
+      } 
+    });
   };
 
   const handleSaveWorkout = () => {
@@ -349,8 +354,19 @@ export default function CreateCustomWorkout() {
 
   const renderConfigureStep = () => (
     <section className="space-y-4 pb-36">
-      <div className="flex items-center justify-between">
-        <h2 className="text-white text-xl font-semibold">2. Configure Sets</h2>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setStep('select')}
+            className="h-10 w-10 rounded-xl bg-white/10 text-white border border-white/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+            title="Back to exercises"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h2 className="text-white text-xl font-semibold">2. Configure Sets</h2>
+        </div>
         <div className="text-white/60 text-xs">
           {selectedExercises.length} exercise{selectedExercises.length !== 1 ? 's' : ''} • {totalSets} set{totalSets !== 1 ? 's' : ''}
         </div>
@@ -532,9 +548,13 @@ export default function CreateCustomWorkout() {
                   disabled={selectedExercises.length === 0}
                   className={`w-full h-12 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${
                     selectedExercises.length > 0
-                      ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-white shadow-lg shadow-cyan-400/30 hover:scale-105 active:scale-95'
+                      ? 'text-white shadow-lg hover:scale-105 active:scale-95'
                       : 'bg-white/10 text-white/50 cursor-not-allowed'
                   }`}
+                  style={selectedExercises.length > 0 ? {
+                    background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+                    boxShadow: '0 4px 16px rgba(255, 149, 0, 0.3)'
+                  } : {}}
                 >
                   <PlayIcon className="w-5 h-5" />
                   Continue
@@ -568,9 +588,13 @@ export default function CreateCustomWorkout() {
                     disabled={selectedExercises.length === 0}
                     className={`flex-1 h-12 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${
                       selectedExercises.length > 0
-                        ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-white shadow-lg shadow-cyan-400/30 hover:scale-105 active:scale-95'
+                        ? 'text-white shadow-lg hover:scale-105 active:scale-95'
                         : 'bg-white/10 text-white/50 cursor-not-allowed'
                     }`}
+                    style={selectedExercises.length > 0 ? {
+                      background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+                      boxShadow: '0 4px 16px rgba(255, 149, 0, 0.3)'
+                    } : {}}
                   >
                     <PlayIcon className="w-5 h-5" />
                     Start

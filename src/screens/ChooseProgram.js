@@ -120,7 +120,11 @@ export default function ChooseProgram() {
               <div className="flex gap-2">
                 <button
                   onClick={() => handleStartProgram(program.id)}
-                  className="flex-1 h-11 rounded-xl bg-gradient-to-r from-cyan-400 to-purple-500 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-105 active:scale-95"
+                  className="flex-1 h-11 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-105 active:scale-95 shadow-lg"
+                  style={{
+                    background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+                    boxShadow: '0 4px 16px rgba(255, 149, 0, 0.3)'
+                  }}
                 >
                   <PlayIcon className="w-4 h-4" />
                   Start

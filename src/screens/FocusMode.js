@@ -253,6 +253,19 @@ export default function FocusMode() {
     setRestVisible(false);
   }
 
+  // Prevent body scrolling when on focus screen
+  useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    const originalHeight = document.body.style.height;
+    document.body.style.overflow = 'hidden';
+    document.body.style.height = '100vh';
+    
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.height = originalHeight;
+    };
+  }, []);
+
   useEffect(() => {
     const preferred = Number(prefs?.restDuration);
     if (!preferred || preferred <= 0) return;
@@ -310,6 +323,7 @@ export default function FocusMode() {
     logSetCompletion,
     markExerciseComplete,
     addAdditionalExercise,
+    additionalExercises,
     nextExerciseIdx,
     setCurrentPlanIdx,
     navigate,
@@ -329,6 +343,7 @@ export default function FocusMode() {
       logSetCompletion,
       markExerciseComplete,
       addAdditionalExercise,
+      additionalExercises,
       nextExerciseIdx,
       setCurrentPlanIdx,
       navigate,
@@ -337,7 +352,7 @@ export default function FocusMode() {
       currentPlanIdx,
       lastLoggedSet: lastLoggedSetRef,
     };
-  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, nextExerciseIdx, setCurrentPlanIdx, navigate, restDuration, startRest, currentPlanIdx]);
+  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, additionalExercises, nextExerciseIdx, setCurrentPlanIdx, navigate, restDuration, startRest, currentPlanIdx]);
 
   // Initialize speech recognition once on mount
   useEffect(() => {
@@ -499,20 +514,42 @@ export default function FocusMode() {
             return;
           }
           
+          // Check if this is the first set of the exercise
+          const exerciseProgress = exerciseNameForParsing && callbacks.setProgress?.[exerciseNameForParsing];
+          const loggedSets = exerciseProgress?.values || [];
+          const isFirstSet = loggedSets.length === 0;
+
+          // Also check Quick Start mode - check if exercise exists in additionalExercises
+          let isFirstSetQuickStart = false;
+          if (callbacks.isQuickStart && exerciseNameForParsing) {
+            const existingExercise = callbacks.additionalExercises?.find(
+              ex => ex.name?.toLowerCase() === exerciseNameForParsing.toLowerCase()
+            );
+            isFirstSetQuickStart = !existingExercise;
+          }
+
           const context = {
             currentExercise: exerciseNameForParsing,
             lastWeight: null,
             lastReps: null,
             targetWeight: exerciseForParsing?.weight || null,
-            targetReps: exerciseForParsing?.reps || null
+            targetReps: exerciseForParsing?.reps || null,
+            isFirstSet: isFirstSet || (callbacks.isQuickStart && isFirstSetQuickStart)
           };
 
-          if (exerciseForParsing && exerciseNameForParsing && callbacks.setProgress?.[exerciseNameForParsing]) {
-            const values = callbacks.setProgress[exerciseNameForParsing].values || [];
-            if (values.length > 0) {
-              const lastSet = values[values.length - 1];
+          if (exerciseProgress && loggedSets.length > 0) {
+            const lastSet = loggedSets[loggedSets.length - 1];
               context.lastWeight = lastSet.weight || null;
               context.lastReps = lastSet.reps || null;
+          } else if (callbacks.isQuickStart && exerciseNameForParsing) {
+            // For Quick Start, check additionalExercises for last logged set of this exercise
+            const exerciseLogs = callbacks.additionalExercises?.filter(
+              ex => ex.name?.toLowerCase() === exerciseNameForParsing.toLowerCase()
+            ) || [];
+            if (exerciseLogs.length > 0) {
+              const lastExerciseLog = exerciseLogs[exerciseLogs.length - 1];
+              context.lastWeight = lastExerciseLog.weight || null;
+              context.lastReps = lastExerciseLog.reps || null;
             }
           }
 
@@ -720,10 +757,40 @@ export default function FocusMode() {
     const callbacks = callbacksRef.current;
     const { exerciseName, transcription, currentContext, isQuickStart } = pendingExerciseAdd;
     
+    // Check if this is the first set of this exercise
+    let isFirstSet = true;
+    let lastWeight = null;
+    let lastReps = null;
+    
+    if (isQuickStart && callbacks.additionalExercises) {
+      // For Quick Start, check if exercise exists in additionalExercises
+      const exerciseLogs = callbacks.additionalExercises.filter(
+        ex => ex.name?.toLowerCase() === exerciseName.toLowerCase()
+      );
+      if (exerciseLogs.length > 0) {
+        isFirstSet = false;
+        const lastLog = exerciseLogs[exerciseLogs.length - 1];
+        lastWeight = lastLog.weight || null;
+        lastReps = lastLog.reps || null;
+      }
+    } else if (callbacks.setProgress?.[exerciseName]) {
+      // For regular mode, check setProgress
+      const loggedSets = callbacks.setProgress[exerciseName].values || [];
+      if (loggedSets.length > 0) {
+        isFirstSet = false;
+        const lastSet = loggedSets[loggedSets.length - 1];
+        lastWeight = lastSet.weight || null;
+        lastReps = lastSet.reps || null;
+      }
+    }
+    
     // Now parse the transcription for weight/reps
     const context = {
       ...currentContext,
       currentExercise: exerciseName,
+      lastWeight,
+      lastReps,
+      isFirstSet,
       lastLoggedSet: callbacks.lastLoggedSet?.current || null,
     };
     
@@ -871,18 +938,27 @@ export default function FocusMode() {
   // This ensures users have time to review abnormal weight/reps and make a decision
 
   return (
-    <div className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-center relative">
+    <div 
+      className="h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-start relative overflow-hidden"
+      style={{ 
+        height: '100vh',
+        height: '100dvh', // Use dynamic viewport height for mobile
+        overflow: 'hidden'
+      }}
+    >
       {/* Offline/Online Status Indicator */}
       <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
         <span className={`w-3 h-3 rounded-full ${isOnline ? 'bg-green-500' : 'bg-orange-400'}`} />
         <span className="text-xs text-white/80">{isOnline ? 'Online' : 'Offline'}</span>
       </div>
 
+      {/* Scrollable Content Container */}
+      <div className="w-full flex-1 flex flex-col items-center justify-start pt-8 pb-4 overflow-y-auto overflow-x-hidden">
       {/* Title */}
-      <h2 className="text-white text-2xl font-semibold mb-8">{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
+        <h2 className="text-white text-2xl font-semibold mb-6">{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
 
       {/* Voice Command Card */}
-      <div className="w-full mb-8">
+        <div className="w-full mb-6">
         <button
           onClick={(e) => {
             e.preventDefault();
@@ -918,7 +994,7 @@ export default function FocusMode() {
       </div>
 
       {/* Below mic card, show last parsed AI result or error in glassy card */}
-      <div className="w-full mb-8 min-h-[3em] flex justify-center">
+        <div className="w-full mb-6 min-h-[3em] flex justify-center">
         {aiParsed && !aiParsed.error && (
           <div className="pulse-glass rounded-xl px-5 py-4 text-white text-center space-y-1 min-w-[225px]">
             <div className="font-medium text-lg">Logged: {aiParsed.exercise}</div>
@@ -928,12 +1004,12 @@ export default function FocusMode() {
         {error && <span className="inline-block px-3 py-2 rounded-xl bg-rose-600/80 text-xs text-white">{error}</span>}
       </div>
 
-      {/* Quick Start: Show logged exercises list */}
+        {/* Quick Start: Show logged exercises list - Internally scrollable if needed */}
       {isQuickStart && (
-        <div className="w-full mb-8 pulse-glass rounded-3xl p-5 space-y-3">
-          <div className="text-white/90 text-sm font-semibold mb-2">Logged Exercises</div>
+          <div className="w-full mb-6 pulse-glass rounded-3xl p-5 flex flex-col" style={{ maxHeight: '40vh', minHeight: '120px' }}>
+            <div className="text-white/90 text-sm font-semibold mb-3 flex-shrink-0">Logged Exercises</div>
           {additionalExercises && additionalExercises.length > 0 ? (
-            <div className="space-y-3">
+              <div className="space-y-3 overflow-y-auto flex-1" style={{ maxHeight: 'calc(40vh - 60px)' }}>
               {additionalExercises.map((ex, idx) => {
                 const isEditing = editingExerciseIndex === idx;
                 const editValues = isEditing ? editingExerciseValues : null;
@@ -1041,17 +1117,17 @@ export default function FocusMode() {
               })}
             </div>
           ) : (
-            <div className="text-white/60 text-sm text-center py-4">No exercises logged yet</div>
+              <div className="text-white/60 text-sm text-center py-4 flex-shrink-0">No exercises logged yet</div>
           )}
         </div>
       )}
 
       {/* Normal mode: Show workout plan */}
       {!isQuickStart && (
-      <div 
-        key={`exercise-${currentPlanIdx}-${exerciseTransitionKey}`}
-        className="w-full mb-8 pulse-glass rounded-3xl p-6 space-y-6 fade-in"
-      >
+        <div 
+          key={`exercise-${currentPlanIdx}-${exerciseTransitionKey}`}
+          className="w-full mb-6 pulse-glass rounded-3xl p-6 space-y-6 fade-in flex-shrink-0"
+        >
         <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-400/30">Strength</div>
         <div className="text-white text-2xl font-bold">{workoutPlan[currentPlanIdx]?.name || 'No Exercise Selected'}</div>
         <div className="grid grid-cols-3 gap-4 text-white/80">
@@ -1094,6 +1170,9 @@ export default function FocusMode() {
       </div>
       )}
 
+      </div>
+      {/* End Scrollable Content Container */}
+
       {/* Celebration overlays */}
       {celebrateSet && (
         <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center">
@@ -1126,7 +1205,7 @@ export default function FocusMode() {
 
       {/* Exercise Navigation Button */}
       {!isQuickStart && workoutPlan.length > 0 && (
-        <div className="fixed left-4 bottom-[calc(env(safe-area-inset-bottom)+140px)] z-20">
+        <div className="fixed left-4 bottom-[calc(env(safe-area-inset-bottom)+100px)] z-20">
           <button
             onClick={() => setShowExerciseNav(true)}
             className="btn-press tap-target px-4 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20 flex items-center gap-2"
@@ -1140,7 +1219,7 @@ export default function FocusMode() {
       )}
 
       {/* Finish Workout Button */}
-      <div className="fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+140px)] z-20">
+      <div className="fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+100px)] z-20">
         <button 
           onClick={()=>navigate('/summary')} 
           className="btn-press tap-target px-5 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20"

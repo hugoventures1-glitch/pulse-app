@@ -30,12 +30,7 @@ const IconSettings = (props) => (
   </svg>
 );
 
-// Custom SVG icons
-const PlayIcon = (props) => (
-  <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <path d="M8 5v14l11-7z" />
-  </svg>
-);
+// PlayIcon removed - START button always shows "START" text
 
 const ClockIcon = (props) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -51,9 +46,17 @@ export default function BottomNav() {
   
   const iconClass = "w-6 h-6";
   const isActive = (path) => location.pathname === path;
+  const isSummaryPage = location.pathname === '/summary';
+  const isWorkoutDetailsPage = location.pathname === '/workout-details';
+  const shouldDimNav = isSummaryPage || isWorkoutDetailsPage;
+  
+  // Shade/disable navigation when on summary or workout details page
+  const navOpacity = shouldDimNav ? 0.3 : 1;
+  const navPointerEvents = shouldDimNav ? 'none' : 'auto';
 
   const handleWorkoutClick = (e) => {
     e.preventDefault();
+    if (shouldDimNav) return; // Don't navigate if nav is dimmed
     if (isWorkoutActive) {
       navigate('/focus');
     } else {
@@ -72,9 +75,11 @@ export default function BottomNav() {
         borderRadius: '18px',
         width: 'calc(100% - 32px)',
         maxWidth: 'calc(375px - 32px)',
+        opacity: navOpacity,
+        pointerEvents: navPointerEvents,
       }}>
-        <div className="mx-auto px-4 py-3">
-          <div className="flex items-center justify-around relative" style={{ height: '56px' }}>
+        <div className="mx-auto px-2 py-3">
+          <div className="flex items-center justify-between relative" style={{ height: '56px' }}>
           {/* Home */}
           <button
             onClick={() => navigate('/')}
@@ -82,7 +87,8 @@ export default function BottomNav() {
             style={{ 
               minWidth: '44px', 
               minHeight: '44px',
-              padding: '8px'
+              padding: '8px',
+              marginLeft: '8px'
             }}
           >
             <IconHome 
@@ -97,14 +103,15 @@ export default function BottomNav() {
             )}
           </button>
           
-          {/* History */}
+          {/* History - Further out from center */}
           <button
             onClick={() => navigate('/history')}
             className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
             style={{ 
               minWidth: '44px', 
               minHeight: '44px',
-              padding: '8px'
+              padding: '8px',
+              marginRight: '32px'
             }}
           >
             <IconChart 
@@ -119,37 +126,33 @@ export default function BottomNav() {
             )}
           </button>
           
-          {/* Center START Button - Slightly larger but balanced */}
+          {/* Center START Button - Bigger and moved into bar */}
           <button
             onClick={handleWorkoutClick}
-            className="absolute left-1/2 -translate-x-1/2 -top-6 flex items-center justify-center rounded-full font-bold text-white shadow-xl transition-all hover:scale-110 active:scale-95"
+            className="absolute left-1/2 -translate-x-1/2 -top-3 flex items-center justify-center rounded-full font-bold text-white shadow-xl transition-all hover:scale-110 active:scale-95"
+            disabled={shouldDimNav}
             style={{
-              width: '56px',
-              height: '56px',
-              background: isWorkoutActive 
-                ? 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)'
-                : 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
-              boxShadow: isWorkoutActive
-                ? '0 6px 24px rgba(34, 197, 94, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)'
-                : '0 6px 24px rgba(255, 149, 0, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)',
-              border: '2px solid rgba(255, 255, 255, 0.2)'
+              width: '64px',
+              height: '64px',
+              background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+              boxShadow: '0 6px 24px rgba(255, 149, 0, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)',
+              border: '2px solid rgba(255, 255, 255, 0.2)',
+              opacity: shouldDimNav ? 0.3 : 1,
+              cursor: shouldDimNav ? 'not-allowed' : 'pointer'
             }}
           >
-            {isWorkoutActive ? (
-              <PlayIcon className="w-7 h-7" />
-            ) : (
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>START</span>
-            )}
+            <span style={{ fontSize: '14px', fontWeight: 700 }}>START</span>
           </button>
           
-          {/* Timer/Recent */}
+          {/* Timer/Recent - Further out from center */}
           <button
             onClick={() => navigate('/progress')}
             className="flex flex-col items-center justify-center gap-1 tap-target transition-all hover:scale-110 active:scale-95"
             style={{ 
               minWidth: '44px', 
               minHeight: '44px',
-              padding: '8px'
+              padding: '8px',
+              marginLeft: '32px'
             }}
           >
             <ClockIcon 
@@ -171,7 +174,8 @@ export default function BottomNav() {
             style={{ 
               minWidth: '44px', 
               minHeight: '44px',
-              padding: '8px'
+              padding: '8px',
+              marginRight: '8px'
             }}
           >
             <IconSettings 

@@ -280,9 +280,18 @@ export default function WorkoutDetails() {
         <h2 className="text-white text-2xl font-bold">Workout Details</h2>
         <button 
           onClick={() => { endWorkout(); navigate('/'); }}
-          className="px-4 h-9 rounded-full bg-white/10 text-white border border-white/10 text-sm"
+          className="px-6 h-11 rounded-full font-bold text-base shadow-xl transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
+          style={{ 
+            background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+            boxShadow: '0 4px 16px rgba(255, 149, 0, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.1)',
+            border: '2px solid rgba(255, 255, 255, 0.2)',
+            color: 'white'
+          }}
         >
-          Done
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <span style={{ fontWeight: 700 }}>Done</span>
         </button>
       </div>
 

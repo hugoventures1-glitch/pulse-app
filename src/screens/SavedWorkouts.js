@@ -50,7 +50,7 @@ export default function SavedWorkouts() {
   const handleStart = (workoutId) => {
     const success = startWorkoutFromTemplate(workoutId);
     if (success) {
-      navigate('/focus');
+      navigate('/workout-preview', { state: { workoutId } });
       if (window?.__toast) window.__toast('Workout loaded');
     } else if (window?.__toast) {
       window.__toast('Workout could not be loaded');
@@ -96,7 +96,11 @@ export default function SavedWorkouts() {
           <div className="text-white/60 text-sm mb-6">Create a custom workout to save it here</div>
           <button
             onClick={() => navigate('/create-custom')}
-            className="px-5 h-11 rounded-xl bg-gradient-to-r from-cyan-400 to-purple-500 text-white font-semibold transition-transform hover:scale-105 active:scale-95"
+            className="px-5 h-11 rounded-xl text-white font-semibold transition-transform hover:scale-105 active:scale-95 shadow-lg"
+            style={{
+              background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+              boxShadow: '0 4px 16px rgba(255, 149, 0, 0.3)'
+            }}
           >
             Build Workout
           </button>
@@ -148,7 +152,11 @@ export default function SavedWorkouts() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleStart(workout.id)}
-                    className="flex-1 h-11 rounded-xl bg-gradient-to-r from-cyan-400 to-purple-500 text-white font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-105 active:scale-95"
+                    className="flex-1 h-11 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-2 transition-transform hover:scale-105 active:scale-95 shadow-lg"
+                    style={{
+                      background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+                      boxShadow: '0 4px 16px rgba(255, 149, 0, 0.3)'
+                    }}
                   >
                     <PlayIcon className="w-4 h-4" />
                     Start
