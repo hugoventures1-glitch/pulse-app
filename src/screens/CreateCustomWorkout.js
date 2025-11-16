@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
-import { EXERCISE_LIBRARY } from '../data/exerciseLibrary';
+import { EXERCISE_LIBRARY, getMergedExerciseLibrary, getAllExercises, getExerciseAliasMap } from '../data/exerciseLibrary';
+import { getCustomExercises, saveCustomExercise, EQUIPMENT_TYPES, MUSCLE_GROUPS } from '../utils/customExercises';
 
 // Custom SVG icons
 const EditIcon = ({ className = "w-5 h-5" }) => (
@@ -43,15 +44,28 @@ export default function CreateCustomWorkout() {
   const editingTemplate = editingWorkoutId ? getSavedWorkoutById(editingWorkoutId) : null;
 
   const [selectedExercises, setSelectedExercises] = useState([]);
+  const [customExercises, setCustomExercises] = useState(() => getCustomExercises());
+  const [mergedLibrary, setMergedLibrary] = useState(() => getMergedExerciseLibrary(customExercises));
   const [openGroups, setOpenGroups] = useState(() => (
-    EXERCISE_LIBRARY.reduce((acc, group) => ({ ...acc, [group.id]: true }), {})
+    mergedLibrary.reduce((acc, group) => ({ ...acc, [group.id]: true }), {})
   ));
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedMuscleGroup, setSelectedMuscleGroup] = useState(null);
+  const [selectedEquipment, setSelectedEquipment] = useState(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showCustomExerciseForm, setShowCustomExerciseForm] = useState(false);
+  const [newExercise, setNewExercise] = useState({ name: '', groupId: 'full-body', equipment: 'Other' });
   const [workoutName, setWorkoutName] = useState('');
   const [step, setStep] = useState('select');
   const [savedWorkoutId, setSavedWorkoutId] = useState(null); // Track ID after saving to prevent duplicates
   const selectionRef = useRef(null);
+
+  // Reload custom exercises and merge with library when customExercises change
+  useEffect(() => {
+    const updated = getCustomExercises();
+    setCustomExercises(updated);
+    setMergedLibrary(getMergedExerciseLibrary(updated));
+  }, []);
 
   useEffect(() => {
     if (editingTemplate) {
@@ -74,11 +88,74 @@ export default function CreateCustomWorkout() {
 
   const selectedExerciseNames = useMemo(() => selectedExercises.map((item) => item.name), [selectedExercises]);
 
+  const handleCreateCustomExercise = () => {
+    if (!newExercise.name.trim()) {
+      alert('Please enter an exercise name');
+      return;
+    }
+    
+    // Check if exercise already exists
+    const allExercises = getAllExercises(customExercises);
+    const exists = allExercises.some(
+      ex => ex.name.toLowerCase() === newExercise.name.trim().toLowerCase()
+    );
+    
+    if (exists) {
+      alert('This exercise already exists in the library');
+      return;
+    }
+
+    const groupLabel = MUSCLE_GROUPS.find(g => g.id === newExercise.groupId)?.label || 'Custom';
+    const exerciseToSave = {
+      name: newExercise.name.trim(),
+      groupId: newExercise.groupId,
+      groupLabel,
+      equipment: newExercise.equipment,
+      bodyweight: newExercise.equipment === 'Bodyweight',
+      aliases: []
+    };
+
+    if (saveCustomExercise(exerciseToSave)) {
+      // Reload custom exercises and merge
+      const updated = getCustomExercises();
+      setCustomExercises(updated);
+      setMergedLibrary(getMergedExerciseLibrary(updated));
+      
+      // Add to selected exercises
+      addExercise(exerciseToSave.name);
+      
+      // Reset form
+      setNewExercise({ name: '', groupId: 'full-body', equipment: 'Other' });
+      setShowCustomExerciseForm(false);
+      
+      if (window?.__toast) window.__toast('Custom exercise saved!');
+    } else {
+      alert('Failed to save custom exercise');
+    }
+  };
+
   const filteredLibrary = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return EXERCISE_LIBRARY;
     
-    return EXERCISE_LIBRARY.map((group) => {
+    let filtered = mergedLibrary;
+    
+    // Filter by muscle group
+    if (selectedMuscleGroup) {
+      filtered = filtered.filter(group => group.id === selectedMuscleGroup);
+    }
+    
+    // Filter by equipment
+    if (selectedEquipment) {
+      filtered = filtered.map(group => ({
+        ...group,
+        exercises: group.exercises.filter(ex => ex.equipment === selectedEquipment)
+      })).filter(group => group.exercises.length > 0);
+    }
+    
+    // Filter by search term
+    if (!term) return filtered;
+    
+    return filtered.map((group) => {
       // Check if the search term matches the group label (muscle group)
       const groupMatches = group.label.toLowerCase().includes(term) || group.id.toLowerCase().includes(term);
       
@@ -111,7 +188,7 @@ export default function CreateCustomWorkout() {
         exercises: matchingExercises
       } : null;
     }).filter((group) => group !== null && group.exercises.length > 0);
-  }, [searchTerm]);
+  }, [searchTerm, selectedMuscleGroup, selectedEquipment, mergedLibrary]);
 
   const toggleGroup = (groupId) => {
     setOpenGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
@@ -274,12 +351,82 @@ export default function CreateCustomWorkout() {
         <h2 className="text-white text-xl font-semibold">1. Choose Exercises</h2>
         <div className="text-white/60 text-xs">{selectedExercises.length} selected</div>
       </div>
+      
+      {/* Search bar */}
       <input
         value={searchTerm}
         onChange={(e) => setSearchTerm(e.target.value)}
         placeholder="Search exercises"
         className="w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-4 text-white placeholder-white/40 outline-none"
       />
+
+      {/* Filters */}
+      <div className="space-y-2">
+        {/* Muscle group filter */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+          <button
+            onClick={() => setSelectedMuscleGroup(null)}
+            className={`px-3 h-8 rounded-full text-xs whitespace-nowrap transition ${
+              selectedMuscleGroup === null
+                ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/30'
+                : 'bg-white/10 text-white/70 border border-white/15'
+            }`}
+          >
+            All Groups
+          </button>
+          {MUSCLE_GROUPS.map((group) => (
+            <button
+              key={group.id}
+              onClick={() => setSelectedMuscleGroup(selectedMuscleGroup === group.id ? null : group.id)}
+              className={`px-3 h-8 rounded-full text-xs whitespace-nowrap transition ${
+                selectedMuscleGroup === group.id
+                  ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/30'
+                  : 'bg-white/10 text-white/70 border border-white/15'
+              }`}
+            >
+              {group.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Equipment filter */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar">
+          <button
+            onClick={() => setSelectedEquipment(null)}
+            className={`px-3 h-8 rounded-full text-xs whitespace-nowrap transition ${
+              selectedEquipment === null
+                ? 'bg-purple-500/20 text-purple-200 border border-purple-400/30'
+                : 'bg-white/10 text-white/70 border border-white/15'
+            }`}
+          >
+            All Equipment
+          </button>
+          {EQUIPMENT_TYPES.map((equipment) => (
+            <button
+              key={equipment}
+              onClick={() => setSelectedEquipment(selectedEquipment === equipment ? null : equipment)}
+              className={`px-3 h-8 rounded-full text-xs whitespace-nowrap transition ${
+                selectedEquipment === equipment
+                  ? 'bg-purple-500/20 text-purple-200 border border-purple-400/30'
+                  : 'bg-white/10 text-white/70 border border-white/15'
+              }`}
+            >
+              {equipment}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Add Custom Exercise button */}
+      <button
+        onClick={() => setShowCustomExerciseForm(true)}
+        className="w-full h-11 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 text-cyan-200 font-medium text-sm flex items-center justify-center gap-2 transition hover:from-cyan-500/30 hover:to-purple-500/30"
+      >
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+        </svg>
+        Add Custom Exercise
+      </button>
 
       {selectedExercises.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -326,17 +473,26 @@ export default function CreateCustomWorkout() {
                 <div className="grid grid-cols-2 gap-2 px-4 pb-4">
                   {group.exercises.map((exercise) => {
                     const isSelected = selectedExerciseNames.includes(exercise.name);
+                    const isCustom = exercise.isCustom;
                     return (
                       <button
                         key={exercise.name}
                         onClick={() => addExercise(exercise.name)}
-                        className={`text-left px-3 py-2 rounded-2xl border text-sm transition ${
+                        className={`text-left px-3 py-2 rounded-2xl border text-sm transition relative ${
                           isSelected
                             ? 'bg-white text-slate-900 border-transparent'
                             : 'bg-white/10 text-white border-white/15'
                         }`}
                       >
-                        {exercise.name}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex-1">{exercise.name}</span>
+                          {isCustom && (
+                            <span className="text-[10px] text-cyan-300/70 font-medium">Custom</span>
+                          )}
+                        </div>
+                        {exercise.equipment && (
+                          <div className="text-[10px] text-white/50 mt-1">{exercise.equipment}</div>
+                        )}
                       </button>
                     );
                   })}
@@ -349,6 +505,74 @@ export default function CreateCustomWorkout() {
           <div className="text-white/60 text-sm text-center py-6">No exercises found.</div>
         )}
       </div>
+
+      {/* Custom Exercise Form Modal */}
+      {showCustomExerciseForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowCustomExerciseForm(false)} />
+          <div className="pulse-glass rounded-3xl p-6 max-w-sm w-full relative z-10 border border-white/20">
+            <h3 className="text-white text-xl font-bold mb-4">Create Custom Exercise</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="text-white/70 text-sm mb-2 block">Exercise Name</label>
+                <input
+                  type="text"
+                  value={newExercise.name}
+                  onChange={(e) => setNewExercise({ ...newExercise, name: e.target.value })}
+                  placeholder="e.g., My Custom Exercise"
+                  className="w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-4 text-white placeholder-white/40 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="text-white/70 text-sm mb-2 block">Muscle Group</label>
+                <select
+                  value={newExercise.groupId}
+                  onChange={(e) => setNewExercise({ ...newExercise, groupId: e.target.value })}
+                  className="w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-4 text-white outline-none"
+                >
+                  {MUSCLE_GROUPS.map((group) => (
+                    <option key={group.id} value={group.id} className="bg-slate-900">
+                      {group.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-white/70 text-sm mb-2 block">Equipment</label>
+                <select
+                  value={newExercise.equipment}
+                  onChange={(e) => setNewExercise({ ...newExercise, equipment: e.target.value })}
+                  className="w-full h-11 rounded-2xl bg-white/10 border border-white/20 px-4 text-white outline-none"
+                >
+                  {EQUIPMENT_TYPES.map((equipment) => (
+                    <option key={equipment} value={equipment} className="bg-slate-900">
+                      {equipment}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setShowCustomExerciseForm(false)}
+                className="flex-1 h-12 rounded-2xl bg-white/10 text-white border border-white/20 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateCustomExercise}
+                className="flex-1 h-12 rounded-2xl bg-gradient-to-r from-cyan-500 to-purple-500 text-white font-semibold"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 

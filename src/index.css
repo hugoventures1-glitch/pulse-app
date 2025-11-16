@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Import Inter Tight font */
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&display=swap');
+
 /* Global styles */
 html, body, #root {
   height: 100%;
@@ -54,6 +57,9 @@ html, body, #root {
   --radius-lg: 20px;
   --radius-xl: 24px;
   --radius-full: 9999px;
+
+  /* Fonts */
+  --font-numbers: 'Inter Tight', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 body {

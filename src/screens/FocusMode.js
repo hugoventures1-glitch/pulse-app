@@ -4,7 +4,9 @@ import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/spe
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
 import { parseWorkoutWithClaude } from '../lib/claude';
-import { FLAT_EXERCISES, EXERCISE_ALIAS_MAP } from '../data/exerciseLibrary';
+import { FLAT_EXERCISES, EXERCISE_ALIAS_MAP, getAllExercises, getExerciseAliasMap } from '../data/exerciseLibrary';
+import { getCustomExercises, autoSaveExerciseFromVoice, exerciseExists } from '../utils/customExercises';
+import { findBestMatch } from '../utils/fuzzyMatch';
 import { checkForNewPR, getPRSettings } from '../utils/personalRecords';
 import PRCelebration from '../components/PRCelebration';
 
@@ -53,58 +55,13 @@ function normalizeSpokenNumbers(transcript) {
   return normalized;
 }
 
-// Exercise detection function with partial matching - finds exercise names in transcription
-function findExerciseInText(transcription, workoutExercises, exerciseLibrary) {
+// Exercise detection function with fuzzy matching - finds exercise names in transcription
+function findExerciseInText(transcription, workoutExercises, allExercises, exerciseAliasMap) {
   if (!transcription || typeof transcription !== 'string') return null;
   
   const text = transcription.toLowerCase().trim();
-  const normalizedText = ` ${text} `;
   
-  // Helper function to check if exercise name matches transcription (with partial matching)
-  function matchesExercise(exerciseName, searchText) {
-    const nameLower = exerciseName.toLowerCase();
-    const words = nameLower.split(/\s+/);
-    
-    // Exact match (full name)
-    if (normalizedText.includes(` ${nameLower} `) || 
-        normalizedText.endsWith(` ${nameLower}`) || 
-        normalizedText.startsWith(`${nameLower} `)) {
-      return { matched: true, score: nameLower.length, matchType: 'exact' };
-    }
-    
-    // Check each word - if all words in exercise name are present
-    let allWordsMatch = true;
-    let matchScore = 0;
-    for (const word of words) {
-      if (word.length < 3) continue; // Skip very short words
-      const wordPattern = new RegExp(`\\b${word}`, 'i');
-      if (wordPattern.test(searchText)) {
-        matchScore += word.length;
-      } else {
-        allWordsMatch = false;
-        break;
-      }
-    }
-    
-    if (allWordsMatch && matchScore > 0) {
-      return { matched: true, score: matchScore, matchType: 'partial' };
-    }
-    
-    // Check if any significant word from exercise name appears in transcription
-    // (for cases like "bench" matching "Bench Press")
-    for (const word of words) {
-      if (word.length >= 4) { // Only check words with 4+ chars
-        const wordPattern = new RegExp(`\\b${word}`, 'i');
-        if (wordPattern.test(searchText)) {
-          return { matched: true, score: word.length, matchType: 'partial-word' };
-        }
-      }
-    }
-    
-    return { matched: false, score: 0 };
-  }
-  
-  // STEP 1: Check workout exercises first (priority) - find best match
+  // STEP 1: Check workout exercises first (priority)
   let bestWorkoutMatch = null;
   let bestWorkoutScore = 0;
   
@@ -113,10 +70,13 @@ function findExerciseInText(transcription, workoutExercises, exerciseLibrary) {
     const name = (typeof ex === 'string' ? ex : ex?.name) || '';
     if (!name) continue;
     
-    const match = matchesExercise(name, text);
-    if (match.matched && match.score > bestWorkoutScore) {
-      bestWorkoutScore = match.score;
-      bestWorkoutMatch = { name, inWorkout: true, index: i, score: match.score };
+    const matchedExercise = findBestMatch(text, [{ name, aliases: [] }], 0.3);
+    if (matchedExercise) {
+      const score = 1.0; // Workout exercises get highest priority
+      if (score > bestWorkoutScore) {
+        bestWorkoutScore = score;
+        bestWorkoutMatch = { name, inWorkout: true, index: i, score };
+      }
     }
   }
   
@@ -124,57 +84,24 @@ function findExerciseInText(transcription, workoutExercises, exerciseLibrary) {
     return bestWorkoutMatch;
   }
   
-  // STEP 2: Check full library using alias map - find best match
-  let bestLibraryMatch = null;
-  let bestLibraryScore = 0;
+  // STEP 2: Check full library (core + custom) using fuzzy matching
+  const matchedExercise = findBestMatch(text, allExercises, 0.3);
   
-  // Check all exercises in library
-  const allLibraryExercises = new Set();
-  EXERCISE_ALIAS_MAP.forEach((canonical) => {
-    allLibraryExercises.add(canonical);
-  });
-  
-  for (const canonical of allLibraryExercises) {
-    const match = matchesExercise(canonical, text);
-    if (match.matched && match.score > bestLibraryScore) {
-      // Check if this exercise is in the workout (should have been caught above, but double-check)
-      const inWorkoutIdx = workoutExercises.findIndex(ex => {
-        const name = (typeof ex === 'string' ? ex : ex?.name) || '';
-        return name.toLowerCase() === canonical.toLowerCase();
-      });
-      
-      if (inWorkoutIdx !== -1) {
-        // Should have been caught in step 1, but handle it anyway
-        bestLibraryScore = match.score;
-        bestLibraryMatch = { name: canonical, inWorkout: true, index: inWorkoutIdx, score: match.score };
-      } else {
-        bestLibraryScore = match.score;
-        bestLibraryMatch = { name: canonical, inWorkout: false, score: match.score };
-      }
+  if (matchedExercise) {
+    // Check if this exercise is in the workout
+    const inWorkoutIdx = workoutExercises.findIndex(ex => {
+      const name = (typeof ex === 'string' ? ex : ex?.name) || '';
+      return name.toLowerCase() === matchedExercise.name.toLowerCase();
+    });
+    
+    if (inWorkoutIdx !== -1) {
+      return { name: matchedExercise.name, inWorkout: true, index: inWorkoutIdx, score: 0.8 };
+    } else {
+      return { name: matchedExercise.name, inWorkout: false, score: 0.8 };
     }
   }
   
-  // Also check aliases directly (for cases where alias is better match)
-  for (const [alias, canonical] of EXERCISE_ALIAS_MAP.entries()) {
-    const match = matchesExercise(alias, text);
-    if (match.matched && match.score > bestLibraryScore) {
-      // Check if this exercise is in the workout
-      const inWorkoutIdx = workoutExercises.findIndex(ex => {
-        const name = (typeof ex === 'string' ? ex : ex?.name) || '';
-        return name.toLowerCase() === canonical.toLowerCase();
-      });
-      
-      if (inWorkoutIdx !== -1) {
-        bestLibraryScore = match.score;
-        bestLibraryMatch = { name: canonical, inWorkout: true, index: inWorkoutIdx, score: match.score };
-      } else if (!bestLibraryMatch || match.score > bestLibraryMatch.score) {
-        bestLibraryScore = match.score;
-        bestLibraryMatch = { name: canonical, inWorkout: false, score: match.score };
-      }
-    }
-  }
-  
-  return bestLibraryMatch;
+  return null;
 }
 
 export default function FocusMode() {
@@ -182,6 +109,12 @@ export default function FocusMode() {
   const location = useLocation();
   const isQuickStart = location.state?.mode === 'quick';
   const { addLog, workoutPlan, getCurrentSetNum, logSetCompletion, setProgress, markExerciseComplete, addAdditionalExercise, additionalExercises, currentPlanIdx, setCurrentPlanIdx, nextExerciseIdx, isOnline, isPaused, pauseWorkout, resumeWorkout, endWorkout, prefs, workoutStartAt, updateAdditionalExercise, removeAdditionalExercise } = useWorkout();
+  
+  // Load custom exercises and merge with core library
+  const customExercises = useMemo(() => getCustomExercises(), []);
+  const allExercises = useMemo(() => getAllExercises(customExercises), [customExercises]);
+  const exerciseAliasMap = useMemo(() => getExerciseAliasMap(customExercises), [customExercises]);
+  
   // Rest timer state
   const [restVisible, setRestVisible] = useState(false);
   const [restDuration, setRestDuration] = useState(90); // default seconds
@@ -438,7 +371,8 @@ export default function FocusMode() {
           const detected = findExerciseInText(
             normalizedTranscript,
             workoutExerciseNames,
-            FLAT_EXERCISES.map(ex => ex.name)
+            allExercises,
+            exerciseAliasMap
           );
           
           // STEP 3: Handle detected exercise based on mode and workout status
@@ -459,6 +393,11 @@ export default function FocusMode() {
               // Continue with parsing using detected exercise...
             } else {
               // Exercise NOT in workout - found in library
+              // Auto-save to custom exercises if it doesn't exist
+              if (!exerciseExists(detected.name)) {
+                autoSaveExerciseFromVoice(detected.name);
+              }
+              
               // Show add modal for both regular and Quick Start mode
               setPendingExerciseAdd({
                 exerciseName: detected.name,
@@ -484,11 +423,16 @@ export default function FocusMode() {
             const mightContainExercise = exerciseKeywords.test(normalizedTranscript);
             
             if (mightContainExercise) {
-              // Transcription seems to mention an exercise but we couldn't detect it
-              setError('Exercise not recognized. Please try saying the full exercise name.');
-              speakMessage('Exercise not recognized');
-              setIsProcessingVoice(false);
-              return;
+              // Try to extract exercise name from Claude parsing result
+              // If Claude can extract an exercise name, auto-save it
+              // This will be handled in the parsing step below
+            } else {
+              // No exercise mentioned - use current exercise (only if in regular mode)
+              if (!currentEx && !callbacks.isQuickStart) {
+                setError('No exercise active. Please specify an exercise name.');
+                setIsProcessingVoice(false);
+                return;
+              }
             }
             
             // No exercise mentioned - use current exercise (only if in regular mode)
@@ -572,6 +516,9 @@ export default function FocusMode() {
           } else if (exerciseNameForParsing) {
             // Use the exercise we determined, not what Claude might return
             result.exercise = exerciseNameForParsing;
+          } else if (result.exercise && !exerciseExists(result.exercise)) {
+            // Claude extracted an exercise name that doesn't exist - auto-save it
+            autoSaveExerciseFromVoice(result.exercise);
           }
 
           setAiParsed(result);
@@ -943,22 +890,23 @@ export default function FocusMode() {
       style={{ 
         height: '100vh',
         height: '100dvh', // Use dynamic viewport height for mobile
-        overflow: 'hidden'
+        overflow: 'hidden',
+        background: '#0a0a0a' // Soft charcoal background
       }}
     >
       {/* Offline/Online Status Indicator */}
       <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
         <span className={`w-3 h-3 rounded-full ${isOnline ? 'bg-green-500' : 'bg-orange-400'}`} />
-        <span className="text-xs text-white/80">{isOnline ? 'Online' : 'Offline'}</span>
+        <span className="text-xs" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.8 }}>{isOnline ? 'Online' : 'Offline'}</span>
       </div>
 
       {/* Scrollable Content Container */}
-      <div className="w-full flex-1 flex flex-col items-center justify-start pt-8 pb-4 overflow-y-auto overflow-x-hidden">
+      <div className="w-full flex-1 flex flex-col items-center justify-start pt-2 pb-4 overflow-y-auto overflow-x-hidden">
       {/* Title */}
-        <h2 className="text-white text-2xl font-semibold mb-6">{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
+        <h2 className="text-[#e5e5e5] text-base font-medium mb-2" style={{ color: '#e5e5e5', fontWeight: 400 }}>{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
 
       {/* Voice Command Card */}
-        <div className="w-full mb-6">
+        <div className="w-full mb-3">
         <button
           onClick={(e) => {
             e.preventDefault();
@@ -969,45 +917,77 @@ export default function FocusMode() {
               ctrlRef.current?.start();
             }
           }}
-          className={`block w-full rounded-3xl p-6 text-left backdrop-blur-md active:scale-[0.99] transition select-none ${
+          className={`block w-full rounded-2xl p-8 text-left backdrop-blur-md active:scale-[0.99] transition select-none ${
             listening 
               ? 'bg-red-500/30 border border-red-400/50 animate-pulse' 
-              : 'bg-cyan-500/20 border border-cyan-400/30'
+              : 'bg-gradient-to-r from-orange-500/25 to-orange-600/20 border border-orange-400/40'
           }`}
-          style={{ userSelect: 'none', touchAction: 'manipulation', WebkitUserSelect: 'none' }}
+          style={{ 
+            userSelect: 'none', 
+            touchAction: 'manipulation', 
+            WebkitUserSelect: 'none',
+            boxShadow: listening 
+              ? '0 4px 16px rgba(239, 68, 68, 0.3)' 
+              : '0 4px 16px rgba(249, 115, 22, 0.3)'
+          }}
         >
-          <div className="text-white/90 text-sm select-none">
+          <div className="text-sm select-none mb-3" style={{ 
+            color: listening ? '#fee2e2' : '#fed7aa', 
+            fontWeight: 500,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase'
+          }}>
             {listening ? '⏹️ TAP TO STOP' : '🎤 TAP TO RECORD'}
           </div>
-          <div className="text-white text-xl font-semibold mt-1 select-none">
+          <div className="text-2xl font-semibold select-none" style={{ 
+            color: listening ? '#fee2e2' : '#fed7aa', 
+            fontWeight: 600 
+          }}>
             {listening ? 'Recording…' : 'Voice Command'}
           </div>
           {!isQuickStart && workoutPlan[currentPlanIdx] && (
-            <div className="text-white/70 text-xs mt-2 select-none">Logging for: {workoutPlan[currentPlanIdx].name}</div>
+            <div className="text-sm mt-4 select-none" style={{ 
+              color: listening ? '#fca5a5' : '#fdba74', 
+              fontWeight: 400,
+              opacity: 0.8
+            }}>Logging for: {workoutPlan[currentPlanIdx].name}</div>
           )}
           {isQuickStart && (
-            <div className="text-white/70 text-sm mt-2 select-none">
+            <div className="text-sm mt-4 select-none" style={{ 
+              color: listening ? '#fca5a5' : '#fdba74', 
+              fontWeight: 400,
+              opacity: 0.8
+            }}>
               {listening ? 'Tap again to stop recording' : 'Tap to start logging exercises'}
             </div>
           )}
         </button>
       </div>
 
+      {/* Subtle Divider */}
+      <div className="w-full h-px bg-white/8 mb-3" />
+
       {/* Below mic card, show last parsed AI result or error in glassy card */}
-        <div className="w-full mb-6 min-h-[3em] flex justify-center">
+        <div className="w-full mb-3 min-h-[2.5em] flex justify-center">
         {aiParsed && !aiParsed.error && (
-          <div className="pulse-glass rounded-xl px-5 py-4 text-white text-center space-y-1 min-w-[225px]">
-            <div className="font-medium text-lg">Logged: {aiParsed.exercise}</div>
-            <div className="text-sm">{aiParsed.weight} kg × {aiParsed.reps} reps</div>
+          <div className="rounded-xl px-4 py-3 text-center space-y-1 min-w-[225px]" style={{ background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.08)', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)' }}>
+            <div className="font-medium text-base" style={{ color: '#f5f5f5', fontWeight: 500 }}>Logged: {aiParsed.exercise}</div>
+            <div className="text-sm" style={{ color: '#e5e5e5', fontWeight: 400 }}>{aiParsed.weight} kg × {aiParsed.reps} reps</div>
           </div>
         )}
-        {error && <span className="inline-block px-3 py-2 rounded-xl bg-rose-600/80 text-xs text-white">{error}</span>}
+        {error && <span className="inline-block px-3 py-2 rounded-xl bg-rose-600/70 text-xs" style={{ color: '#f5f5f5', fontWeight: 400 }}>{error}</span>}
       </div>
 
         {/* Quick Start: Show logged exercises list - Internally scrollable if needed */}
       {isQuickStart && (
-          <div className="w-full mb-6 pulse-glass rounded-3xl p-5 flex flex-col" style={{ maxHeight: '40vh', minHeight: '120px' }}>
-            <div className="text-white/90 text-sm font-semibold mb-3 flex-shrink-0">Logged Exercises</div>
+          <div className="w-full mb-3 rounded-2xl p-4 flex flex-col" style={{ 
+            maxHeight: '40vh', 
+            minHeight: '120px',
+            background: 'rgba(255, 255, 255, 0.04)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 2px 12px rgba(0, 0, 0, 0.25)'
+          }}>
+            <div className="text-[#f5f5f5] text-sm mb-3 flex-shrink-0" style={{ color: '#f5f5f5', fontWeight: 500 }}>Logged Exercises</div>
           {additionalExercises && additionalExercises.length > 0 ? (
               <div className="space-y-3 overflow-y-auto flex-1" style={{ maxHeight: 'calc(40vh - 60px)' }}>
               {additionalExercises.map((ex, idx) => {
@@ -1015,7 +995,11 @@ export default function FocusMode() {
                 const editValues = isEditing ? editingExerciseValues : null;
                 
                 return (
-                  <div key={idx} className="rounded-xl bg-white/5 border border-white/10 p-4">
+                  <div key={idx} className="rounded-xl p-4" style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    boxShadow: '0 1px 4px rgba(0, 0, 0, 0.15)'
+                  }}>
                     {isEditing ? (
                       /* Edit Mode */
                       <div className="space-y-3">
@@ -1098,8 +1082,8 @@ export default function FocusMode() {
                       /* View Mode */
                       <div className="flex items-center justify-between">
                         <div className="flex-1 min-w-0">
-                          <div className="text-white font-semibold truncate">{ex.name}</div>
-                          <div className="text-white/70 text-xs mt-1">
+                          <div className="truncate" style={{ color: '#f5f5f5', fontWeight: 600 }}>{ex.name}</div>
+                          <div className="text-xs mt-1" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.7, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>
                     {ex.weight} kg × {ex.reps} reps
                     {ex.sets > 1 && ` × ${ex.sets} sets`}
                 </div>
@@ -1117,7 +1101,7 @@ export default function FocusMode() {
               })}
             </div>
           ) : (
-              <div className="text-white/60 text-sm text-center py-4 flex-shrink-0">No exercises logged yet</div>
+              <div className="text-sm text-center py-4 flex-shrink-0" style={{ color: '#e5e5e5', fontWeight: 300, opacity: 0.6 }}>No exercises logged yet</div>
           )}
         </div>
       )}
@@ -1126,11 +1110,16 @@ export default function FocusMode() {
       {!isQuickStart && (
         <div 
           key={`exercise-${currentPlanIdx}-${exerciseTransitionKey}`}
-          className="w-full mb-6 pulse-glass rounded-3xl p-6 space-y-6 fade-in flex-shrink-0"
+          className="w-full mb-3 rounded-2xl p-6 space-y-5 fade-in flex-shrink-0"
+          style={{
+            background: 'rgba(255, 255, 255, 0.04)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)'
+          }}
         >
-        <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-semibold border border-cyan-400/30">Strength</div>
-        <div className="text-white text-2xl font-bold">{workoutPlan[currentPlanIdx]?.name || 'No Exercise Selected'}</div>
-        <div className="grid grid-cols-3 gap-4 text-white/80">
+        <div className="inline-flex items-center px-3 py-1.5 rounded-full bg-cyan-500/20 text-cyan-300 text-xs font-medium border border-cyan-400/30" style={{ fontWeight: 500 }}>Strength</div>
+        <div className="text-[#f5f5f5] text-3xl font-bold" style={{ color: '#f5f5f5', fontWeight: 700, lineHeight: '1.2' }}>{workoutPlan[currentPlanIdx]?.name || 'No Exercise Selected'}</div>
+        <div className="grid grid-cols-3 gap-3">
           {(() => {
             const ex = workoutPlan[currentPlanIdx] || { name: '', sets: 1, reps: 8, weight: 60 };
             const progress = (setProgress?.[ex.name]?.progress || 0);
@@ -1144,29 +1133,55 @@ export default function FocusMode() {
             const displayWeight = showingActuals && lastSetVals.weight !== undefined ? lastSetVals.weight : (ex.weight || 60);
             const isTarget = !showingActuals;
             return <>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center"><div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Sets</div><div className="text-2xl font-bold">{progress}/{ex.sets}</div></div>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center">
-                <div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Reps</div>
-                <div className={`text-2xl font-bold ${isTarget ? 'text-white/60' : 'text-white'}`}>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center" style={{ boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)' }}>
+                <div className="text-xs uppercase tracking-wide mb-2" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.6 }}>Sets</div>
+                <div className="text-3xl font-bold mb-2" style={{ color: '#f5f5f5', fontWeight: 700, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>{progress}/{ex.sets}</div>
+                {/* Progress Bar */}
+                <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden mt-2">
+                  <div 
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${(progress / ex.sets) * 100}%`,
+                      background: 'linear-gradient(90deg, #00D9FF 0%, #22D3EE 100%)',
+                      boxShadow: '0 0 8px rgba(0, 217, 255, 0.4)'
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center" style={{ boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)' }}>
+                <div className="text-xs uppercase tracking-wide mb-1.5" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.6 }}>Reps</div>
+                <div className={`text-2xl font-bold ${isTarget ? '' : ''}`} style={{ 
+                  color: isTarget ? '#e5e5e5' : '#f5f5f5', 
+                  fontWeight: 600,
+                  opacity: isTarget ? 0.6 : 1,
+                  fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)'
+                }}>
                   {displayReps}
                 </div>
                 {isTarget && (
-                  <div className="text-[10px] text-white/40 mt-1 font-normal">(target)</div>
+                  <div className="text-[10px] mt-1" style={{ color: '#e5e5e5', fontWeight: 300, opacity: 0.4 }}>(target)</div>
                 )}
               </div>
-              <div className="rounded-2xl bg-white/5 border border-white/10 p-4 text-center">
-                <div className="text-xs uppercase tracking-wide mb-1.5 text-white/60">Weight</div>
-                <div className={`text-2xl font-bold ${isTarget ? 'text-white/60' : 'text-white'}`}>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center" style={{ boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)' }}>
+                <div className="text-xs uppercase tracking-wide mb-1.5" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.6 }}>Weight</div>
+                <div className={`text-2xl font-bold ${isTarget ? '' : ''}`} style={{ 
+                  color: isTarget ? '#e5e5e5' : '#f5f5f5', 
+                  fontWeight: 600,
+                  opacity: isTarget ? 0.6 : 1,
+                  fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)'
+                }}>
                   {displayWeight} kg
                 </div>
                 {isTarget && (
-                  <div className="text-[10px] text-white/40 mt-1 font-normal">(target)</div>
+                  <div className="text-[10px] mt-1" style={{ color: '#e5e5e5', fontWeight: 300, opacity: 0.4 }}>(target)</div>
                 )}
               </div>
             </>;
           })()}
         </div>
-        <div className="text-white/70 text-sm">Previous: 82 kg × 8</div>
+        {/* Subtle Divider */}
+        <div className="w-full h-px bg-white/8 my-3" />
+        <div className="text-[#e5e5e5]/70 text-sm" style={{ color: '#e5e5e5', fontWeight: 400, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>Previous: 82 kg × 8</div>
       </div>
       )}
 
@@ -1197,35 +1212,72 @@ export default function FocusMode() {
       <div className="fixed top-4 left-4 z-40">
         <button 
           onClick={pauseWorkout} 
-          className="btn-press tap-target px-4 h-11 rounded-full bg-white/10 text-white border border-white/15 text-sm backdrop-blur-md hover:bg-white/15 active:bg-white/20"
+          className="btn-press tap-target px-4 h-10 rounded-2xl text-sm backdrop-blur-md flex items-center gap-2"
+          style={{
+            background: 'rgba(255, 255, 255, 0.06)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            color: '#f5f5f5',
+            fontWeight: 500,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)'
+          }}
         >
-          {isPaused ? 'Resume' : 'Pause'}
+          {isPaused ? (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Resume
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Pause
+            </>
+          )}
         </button>
       </div>
 
-      {/* Exercise Navigation Button */}
-      {!isQuickStart && workoutPlan.length > 0 && (
-        <div className="fixed left-4 bottom-[calc(env(safe-area-inset-bottom)+100px)] z-20">
-          <button
-            onClick={() => setShowExerciseNav(true)}
-            className="btn-press tap-target px-4 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20 flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-            Exercises ({workoutPlan.length})
-          </button>
-        </div>
-      )}
+      {/* Exercise Navigation and Finish Buttons - Unified Bottom Section */}
+      <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+100px)] left-0 right-0 z-20 px-4">
+        <div className="flex items-center gap-3 max-w-[375px] mx-auto">
+          {/* Exercise Navigation Button */}
+          {!isQuickStart && workoutPlan.length > 0 && (
+            <button
+              onClick={() => setShowExerciseNav(true)}
+              className="btn-press tap-target flex-1 h-12 rounded-2xl backdrop-blur-md font-medium text-sm flex items-center justify-center gap-2"
+              style={{
+                background: 'rgba(255, 255, 255, 0.06)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                color: '#f5f5f5',
+                fontWeight: 500,
+                boxShadow: '0 2px 12px rgba(0, 0, 0, 0.25)'
+              }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+              Exercises ({workoutPlan.length})
+            </button>
+          )}
 
       {/* Finish Workout Button */}
-      <div className="fixed right-4 bottom-[calc(env(safe-area-inset-bottom)+100px)] z-20">
-        <button 
-          onClick={()=>navigate('/summary')} 
-          className="btn-press tap-target px-5 h-11 rounded-full bg-white/10 text-white border border-white/20 backdrop-blur-md shadow-lg font-semibold text-sm hover:bg-white/15 active:bg-white/20"
-        >
-          Finish
+          <button 
+            onClick={()=>navigate('/summary')} 
+            className={`btn-press tap-target h-12 rounded-2xl backdrop-blur-md font-medium text-sm ${!isQuickStart && workoutPlan.length > 0 ? 'flex-1' : 'w-full'}`}
+            style={{
+              background: 'rgba(255, 255, 255, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              color: '#f5f5f5',
+              fontWeight: 500,
+              boxShadow: '0 2px 12px rgba(0, 0, 0, 0.25)'
+            }}
+          >
+            Finish
         </button>
+        </div>
       </div>
 
       {/* Paused Overlay (blocks everything including nav) */}
