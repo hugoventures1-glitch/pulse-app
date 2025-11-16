@@ -901,9 +901,9 @@ export default function FocusMode() {
       </div>
 
       {/* Scrollable Content Container */}
-      <div className="w-full flex-1 flex flex-col items-center justify-start pt-2 pb-4 overflow-y-auto overflow-x-hidden">
+      <div className="w-full flex-1 flex flex-col items-center justify-center pt-8 pb-4 overflow-y-auto overflow-x-hidden">
       {/* Title */}
-        <h2 className="text-[#e5e5e5] text-base font-medium mb-2" style={{ color: '#e5e5e5', fontWeight: 400 }}>{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
+        <h2 className="text-[#e5e5e5] text-base font-medium mb-3" style={{ color: '#e5e5e5', fontWeight: 400 }}>{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
 
       {/* Voice Command Card */}
         <div className="w-full mb-3">
