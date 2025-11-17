@@ -69,7 +69,7 @@ const formatPreview = (exercises = []) => {
 const countSets = (exercises = []) => exercises.reduce((sum, exercise) => sum + (exercise.sets?.length || exercise.setTargets?.length || exercise.setsCount || 0), 0);
 
 export default function HomeDashboard() {
-  const { history = [], savedWorkouts = [], startWorkoutFromTemplate, userProfile, userStats } = useWorkout();
+  const { history = [], savedWorkouts = [], startWorkoutFromTemplate, userProfile, userStats, prefs } = useWorkout();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -150,9 +150,21 @@ export default function HomeDashboard() {
       return workoutDate >= lastWeekStart && workoutDate < weekStart;
     });
 
+    const countBodyweightInVolume = prefs?.countBodyweightInVolume || false;
+    const userBodyWeight = prefs?.userBodyWeight || 0;
     const calculateVolume = (workouts) => {
       return workouts.reduce((total, workout) => {
-        return total + workout.entries.reduce((vol, e) => vol + (e.reps * e.weight), 0);
+        return total + workout.entries.reduce((vol, e) => {
+          if (e.isBodyweight) {
+            // If setting is enabled and user body weight is set, use it for volume calculation
+            if (countBodyweightInVolume && userBodyWeight > 0) {
+              return vol + (e.reps * userBodyWeight);
+            }
+            // Otherwise, skip (count as 0)
+            return vol;
+          }
+          return vol + (e.reps * e.weight);
+        }, 0);
       }, 0);
     };
 
@@ -280,7 +292,7 @@ export default function HomeDashboard() {
       recentWorkouts,
       weeklyCompletion: Math.round((weeklyProgress / weeklyGoal) * 100)
     };
-  }, [history]);
+  }, [history, workoutHistory, prefs]);
 
   // Get personalized stats from userStats or fallback to calculated stats
   const personalStreak = userStats?.currentStreak || stats.streak || 0;

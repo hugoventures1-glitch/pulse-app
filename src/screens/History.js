@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useWorkout } from '../state/WorkoutContext';
 import { formatWorkoutDate } from '../utils/dateFormatter';
+import { BODYWEIGHT_EXERCISES } from '../data/exerciseLibrary';
 
 // Custom SVG icons
 const ClockIcon = ({ className = "w-5 h-5" }) => (
@@ -87,7 +88,11 @@ export default function History() {
                     <DumbbellIcon className="w-4 h-4 text-cyan-300 flex-shrink-0" />
                     <span className="text-white font-medium text-sm truncate">{e.exercise}</span>
                   </div>
-                  <span className="text-white/80 text-sm font-semibold ml-3">{e.weight} kg × {e.reps}</span>
+                  <span className="text-white/80 text-sm font-semibold ml-3">
+                    {e.isBodyweight || (e.weight === 0 && BODYWEIGHT_EXERCISES.has(e.exercise)) 
+                      ? 'bodyweight' 
+                      : `${e.weight} kg`} × {e.reps}
+                  </span>
                 </div>
               ))}
             </div>

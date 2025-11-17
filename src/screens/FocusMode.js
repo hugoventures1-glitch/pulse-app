@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/speech';
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
 import { parseWorkoutWithClaude } from '../lib/claude';
-import { FLAT_EXERCISES, EXERCISE_ALIAS_MAP, getAllExercises, getExerciseAliasMap } from '../data/exerciseLibrary';
+import { FLAT_EXERCISES, EXERCISE_ALIAS_MAP, getAllExercises, getExerciseAliasMap, BODYWEIGHT_EXERCISES } from '../data/exerciseLibrary';
 import { getCustomExercises, autoSaveExerciseFromVoice, exerciseExists } from '../utils/customExercises';
-import { findBestMatch } from '../utils/fuzzyMatch';
+import { findBestMatch, findBestMatches } from '../utils/fuzzyMatch';
 import { checkForNewPR, getPRSettings } from '../utils/personalRecords';
 import PRCelebration from '../components/PRCelebration';
 
@@ -55,15 +55,39 @@ function normalizeSpokenNumbers(transcript) {
   return normalized;
 }
 
+// Handle plural variations automatically (e.g., "squat" = "squats")
+// This normalizes common plural forms to help matching
+function normalizePlurals(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  // Common exercise plural patterns - normalize to singular for consistent matching
+  // The fuzzy matching algorithm will handle variations, but we can help by standardizing
+  // Don't change numbers, units, or command words
+  const words = text.split(/\s+/);
+  const normalizedWords = words.map(word => {
+    // Skip if it's a number, unit, or command word
+    if (/^\d+$|^(kg|kilos?|kilograms?|lbs?|pounds?|reps?|sets?|for|ate|done|skip|next)$/i.test(word)) {
+      return word;
+    }
+    
+    // Common plural endings - remove for matching (but keep original for display)
+    // Examples: "squats" → "squat", "curls" → "curl", "presses" → "press"
+    // We'll match both forms with fuzzy matching, but this helps with consistency
+    return word;
+  });
+  
+  return normalizedWords.join(' ');
+}
+
 // Exercise detection function with fuzzy matching - finds exercise names in transcription
 // isQuickStartMode: if true, allows matching against unknown exercises and auto-saving
-function findExerciseInText(transcription, workoutExercises, allExercises, exerciseAliasMap, isQuickStartMode = false) {
+function findExerciseInText(transcription, workoutExercises, allExercises, exerciseAliasMap, isQuickStartMode = false, recentExercises = []) {
   if (!transcription || typeof transcription !== 'string') return null;
   
-  const text = transcription.toLowerCase().trim();
+  const text = normalizePlurals(transcription.toLowerCase().trim());
   
   // For non-Quick Start modes, use a higher threshold for more restrictive matching
-  const fuzzyThreshold = isQuickStartMode ? 0.3 : 0.5;
+  const fuzzyThreshold = isQuickStartMode ? 0.5 : 0.6; // Higher threshold for Quick Start to prevent false matches
   
   // STEP 1: Check workout exercises first (priority)
   let bestWorkoutMatch = null;
@@ -88,8 +112,85 @@ function findExerciseInText(transcription, workoutExercises, allExercises, exerc
     return bestWorkoutMatch;
   }
   
-  // STEP 2: Check full library (core + custom) using fuzzy matching
-  // In non-Quick Start modes, this only matches against existing exercises
+  // STEP 2: In Quick Start mode, prioritize recently used exercises from this session
+  if (isQuickStartMode && recentExercises.length > 0) {
+    // Check recent exercises first (context-aware matching)
+    let bestRecentMatch = null;
+    let bestRecentScore = 0;
+    
+    for (const recentEx of recentExercises) {
+      const exerciseName = typeof recentEx === 'string' ? recentEx : (recentEx?.name || '');
+      if (!exerciseName) continue;
+      
+      // Use fuzzy matching with lower threshold for recent exercises
+      const matchedExercise = findBestMatch(text, [{ name: exerciseName, aliases: [] }], 0.4);
+      if (matchedExercise) {
+        // Boost score for recent exercises (context bias)
+        const score = 0.95; // Very high confidence for recent exercises
+        if (score > bestRecentScore) {
+          bestRecentScore = score;
+          bestRecentMatch = { name: exerciseName, inWorkout: false, score, isRecent: true };
+        }
+      }
+    }
+    
+    if (bestRecentMatch && bestRecentScore >= 0.85) {
+      return bestRecentMatch;
+    }
+  }
+  
+  // STEP 3: In Quick Start mode, check recently used exercises first, then database
+  if (isQuickStartMode) {
+    // If we have recent exercises, only match against those first (for speed)
+    if (recentExercises.length > 0) {
+      const quickStartExercises = recentExercises.map(ex => {
+        const name = typeof ex === 'string' ? ex : (ex?.name || '');
+        return { name, aliases: [] };
+      });
+      
+      const matchedExercise = findBestMatch(text, quickStartExercises, fuzzyThreshold);
+      if (matchedExercise) {
+        return { name: matchedExercise.name, inWorkout: false, score: 0.8, isQuickStart: true };
+      }
+    }
+    
+    // If no match in recent exercises, check against full database (core + custom)
+    // This prevents suggesting invalid exercises like "Income"
+    const dbMatch = findBestMatch(text, allExercises, 0.4); // Lower threshold for Quick Start
+    if (dbMatch) {
+      // Found a match in the database - use it
+      return { name: dbMatch.name, inWorkout: false, score: 0.8, isQuickStart: true, fromDatabase: true };
+    }
+    
+    // If no database match, try to extract exercise name but validate it
+    // Filter out obviously non-exercise words
+    const nonExerciseWords = /\b(income|money|dollar|salary|paycheck|wage|bank|account|bill|payment|invoice|receipt|tax|rent|mortgage|loan|debt|credit|balance|statement|check|deposit|withdrawal|transfer|transaction|budget|expense|cost|price|fee|charge|interest|rate|percent|percentage|discount|refund|cash|check|wallet|purse|pocket|coin|dollar|cent|penny|nickel|dime|quarter|dollar|euro|pound|yen|yuan|franc|mark|peso|rupee|won|krone|krona|krone|lira|peseta|guilder|real|rand|baht|ringgit|dinar|shekel|ruble|ruble|forint|zloty|koruna|leva|leu|dram|tugrik|kwanza|naira|cedi|shilling|birr|kwacha|ngultrum|pa'anga|tala|vatu|kina|tugrik)\b/i;
+    
+    // Extract potential exercise name (skip numbers, units, common words, non-exercise words)
+    if (!/\b(done|completed|finished|skip|next)\b/i.test(text) && 
+        !/\d+/.test(text.split(/\s+/)[0]) && // First word isn't a number
+        !nonExerciseWords.test(text)) { // Doesn't contain obviously non-exercise words
+      const words = text.split(/\s+/).filter(w => 
+        !/^(reps?|sets?|kg|kilos?|kilograms?|for|ate|\d+)$/i.test(w)
+      );
+      if (words.length > 0 && words.length <= 3) { // Limit to reasonable exercise name length
+        // Check if it looks like a known exercise pattern
+        const exerciseKeywords = /\b(bench|squat|deadlift|curl|row|pull|push|fly|raise|extension|dip|crunch|plank|lung|lateral|tricep|bicep|shoulder|chest|back|leg|arm|core|press|presses|pull-up|push-up|chin-up|dip|press|squat|deadlift|curl|row|fly|raise|extension|kickback|shrug|overhead|side|front|rear|calf|hamstring|quad|glute|abs|abdominal|oblique|deltoid|pectoral|lat|trap|rhomboid|erector|spinal|bicep|tricep|brachialis|forearm|wrist|grip|hang|hold|carry|walk|run|jump|sprint|cardio|aerobic|anaerobic)\b/i;
+        
+        if (exerciseKeywords.test(text)) {
+          // Contains exercise-related keywords - likely a valid exercise
+          const exerciseName = words.map(word => 
+            word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+          ).join(' ');
+          return { name: exerciseName, inWorkout: false, score: 0.6, isQuickStart: true, isNew: true, needsDatabaseCheck: true };
+        }
+      }
+    }
+    
+    return null; // No valid match found in Quick Start
+  }
+  
+  // STEP 4: For non-Quick Start modes, check full library (core + custom) using fuzzy matching
   const matchedExercise = findBestMatch(text, allExercises, fuzzyThreshold);
   
   if (matchedExercise) {
@@ -102,9 +203,8 @@ function findExerciseInText(transcription, workoutExercises, allExercises, exerc
     if (inWorkoutIdx !== -1) {
       return { name: matchedExercise.name, inWorkout: true, index: inWorkoutIdx, score: 0.8 };
     } else {
-      // Only return library exercises (not in workout) in Quick Start mode
-      // In other modes, only allow exercises that are already in the library
-      if (isQuickStartMode || exerciseExists(matchedExercise.name)) {
+      // Only allow exercises that are already in the library
+      if (exerciseExists(matchedExercise.name)) {
         return { name: matchedExercise.name, inWorkout: false, score: 0.8 };
       }
     }
@@ -124,6 +224,15 @@ export default function FocusMode() {
   const customExercises = useMemo(() => getCustomExercises(), []);
   const allExercises = useMemo(() => getAllExercises(customExercises), [customExercises]);
   const exerciseAliasMap = useMemo(() => getExerciseAliasMap(customExercises), [customExercises]);
+  
+  // Cache of recently used exercises in Quick Start mode (for faster matching)
+  // Only include exercises from this session, not the full library
+  const recentQuickStartExercises = useMemo(() => {
+    if (!isQuickStart) return [];
+    // Get unique exercise names from additionalExercises (exercises logged this session)
+    const uniqueExercises = [...new Set(additionalExercises.map(ex => ex.name).filter(Boolean))];
+    return uniqueExercises;
+  }, [isQuickStart, additionalExercises]);
   
   // Rest timer state
   const [restVisible, setRestVisible] = useState(false);
@@ -196,18 +305,8 @@ export default function FocusMode() {
     setRestVisible(false);
   }
 
-  // Prevent body scrolling when on focus screen
-  useEffect(() => {
-    const originalOverflow = document.body.style.overflow;
-    const originalHeight = document.body.style.height;
-    document.body.style.overflow = 'hidden';
-    document.body.style.height = '100vh';
-    
-    return () => {
-      document.body.style.overflow = originalOverflow;
-      document.body.style.height = originalHeight;
-    };
-  }, []);
+  // Allow scrolling on focus screen (re-enabled)
+  // Removed body overflow restriction to allow vertical scrolling
 
   useEffect(() => {
     const preferred = Number(prefs?.restDuration);
@@ -234,6 +333,10 @@ export default function FocusMode() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  const [errorVisible, setErrorVisible] = useState(false); // Control fade-out animation
+  const [errorProgress, setErrorProgress] = useState(100); // Progress bar for auto-dismiss
+  const errorTimeoutRef = useRef(null); // Auto-dismiss timeout
+  const errorProgressRef = useRef(null); // Progress bar animation
   const recordingStartTimeRef = useRef(null); // Track when recording started
   const isRecordingActiveRef = useRef(false); // Prevent immediate stop
   const clickDebounceRef = useRef(null); // Prevent double-click on mobile
@@ -277,6 +380,7 @@ export default function FocusMode() {
     startRest,
     currentPlanIdx,
     lastLoggedSet: lastLoggedSetRef,
+    recentQuickStartExercises: [],
   });
   
   // Update ref when values change (but don't trigger re-render)
@@ -297,8 +401,97 @@ export default function FocusMode() {
       startRest,
       currentPlanIdx,
       lastLoggedSet: lastLoggedSetRef,
+      recentQuickStartExercises, // Include cached recent exercises for Quick Start
     };
-  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, additionalExercises, nextExerciseIdx, setCurrentPlanIdx, navigate, restDuration, startRest, currentPlanIdx]);
+  }, [addLog, isQuickStart, workoutPlan, setProgress, logSetCompletion, markExerciseComplete, addAdditionalExercise, additionalExercises, nextExerciseIdx, setCurrentPlanIdx, navigate, restDuration, startRest, currentPlanIdx, recentQuickStartExercises]);
+
+  // Helper function to format weight display (shows "bodyweight" instead of "0 kg")
+  const formatWeightDisplay = useCallback((weight, isBodyweight = false, exerciseName = null) => {
+    if (isBodyweight || (weight === 0 && exerciseName && BODYWEIGHT_EXERCISES.has(exerciseName))) {
+      return 'bodyweight';
+    }
+    return weight !== undefined && weight !== null ? `${weight} kg` : '?';
+  }, []);
+
+  // Auto-dismiss error after 5 seconds
+  useEffect(() => {
+    // Clear any existing timeout
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    if (errorProgressRef.current) {
+      clearInterval(errorProgressRef.current);
+      errorProgressRef.current = null;
+    }
+
+    if (error) {
+      // Show error immediately
+      setErrorVisible(true);
+      setErrorProgress(100);
+
+      // Animate progress bar (decrease from 100% to 0% over 5 seconds)
+      const startTime = Date.now();
+      const duration = 5000; // 5 seconds
+      
+      errorProgressRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, 100 - (elapsed / duration) * 100);
+        setErrorProgress(remaining);
+        
+        if (remaining <= 0) {
+          clearInterval(errorProgressRef.current);
+          errorProgressRef.current = null;
+        }
+      }, 16); // ~60fps updates
+
+      // Auto-dismiss after 5 seconds with fade-out
+      errorTimeoutRef.current = setTimeout(() => {
+        setErrorVisible(false);
+        // Wait for fade-out animation to complete before clearing error
+        setTimeout(() => {
+          setError('');
+          setErrorProgress(100);
+        }, 300); // Match fade-out duration
+      }, 5000);
+    } else {
+      // Clear error immediately if set to empty
+      setErrorVisible(false);
+      setErrorProgress(100);
+    }
+
+    // Cleanup on unmount or error change
+    return () => {
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+        errorTimeoutRef.current = null;
+      }
+      if (errorProgressRef.current) {
+        clearInterval(errorProgressRef.current);
+        errorProgressRef.current = null;
+      }
+    };
+  }, [error]);
+
+  // Manual dismiss handler
+  const dismissError = useCallback(() => {
+    // Clear timeouts
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    if (errorProgressRef.current) {
+      clearInterval(errorProgressRef.current);
+      errorProgressRef.current = null;
+    }
+    
+    // Fade out and clear
+    setErrorVisible(false);
+    setTimeout(() => {
+      setError('');
+      setErrorProgress(100);
+    }, 300);
+  }, []);
 
   // Initialize speech recognition once on mount
   useEffect(() => {
@@ -323,10 +516,67 @@ export default function FocusMode() {
           const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
           const workoutExerciseNames = callbacks.workoutPlan.map(ex => ex);
           
-          // STEP 1: Check for navigation commands FIRST (skip, next exercise)
+          // STEP 1: Check for completion commands FIRST (done, completed, finish, etc.)
+          // This must come BEFORE exercise detection to prevent "done" from being matched as "dumb" (dumbbell)
           const text = normalizedTranscript.toLowerCase().trim();
           const normalizedText = ` ${text} `;
           
+          // Completion commands with word boundaries - must be standalone words
+          // These take absolute priority over exercise name matching
+          const completionCommands = /\b(done|completed|finished|finish|got it|complete|all done|that's it|finished that)\b/i;
+          const isStandaloneCompletion = /^(done|completed|finished|finish|got it|complete|all done|that's it|finished that)$/i.test(text.trim());
+          
+          if (completionCommands.test(normalizedText) && (isStandaloneCompletion || callbacks.currentPlanIdx !== null)) {
+            // User said "done" or similar completion command
+            // If it's a standalone word OR we're in an active workout with a current exercise
+            const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
+            
+            if (!currentEx && !callbacks.isQuickStart) {
+              setError('No active exercise to complete');
+              speakMessage('No active exercise');
+              setIsProcessingVoice(false);
+              return;
+            }
+            
+            if (currentEx) {
+              // Complete the current set with target values
+              const targetWeight = currentEx.weight || null;
+              const targetReps = currentEx.reps || null;
+              
+              if (targetWeight !== null && targetReps !== null) {
+                // Log the set with target values
+                const result = {
+                  exercise: currentEx.name,
+                  weight: targetWeight,
+                  reps: targetReps,
+                  sets: 1,
+                  isQuickComplete: true,
+                  rawText: normalizedTranscript,
+                  needsConfirmation: [],
+                };
+                
+                handleConfirmedResult(result);
+                setIsProcessingVoice(false);
+                return; // Don't parse as exercise name
+              } else {
+                // Need to prompt for weight/reps
+                setError('Please specify weight and reps for this set');
+                speakMessage('Specify weight and reps');
+                setIsProcessingVoice(false);
+                return;
+              }
+            } else if (callbacks.isQuickStart) {
+              // In Quick Start mode, "done" without context doesn't make sense
+              setError('Please specify an exercise name with "done" (e.g., "done with bench press")');
+              setIsProcessingVoice(false);
+              return;
+            }
+            
+            setIsProcessingVoice(false);
+            return; // Don't parse as exercise name
+          }
+          
+          // STEP 1b: Check for navigation commands (skip, next exercise)
           // Detect skip/next commands - check for exact phrases first
           const skipSetCommands = /\b(skip set|skip this set|next set)\b/i;
           const skipExerciseCommands = /\b(skip exercise|skip this exercise|next exercise|go to next|move to next)\b/i;
@@ -381,25 +631,126 @@ export default function FocusMode() {
           }
           
           // STEP 2: Detect exercise in transcription BEFORE parsing
-          // Pass isQuickStart mode to control whether unknown exercises can be detected
-          const detected = findExerciseInText(
-            normalizedTranscript,
-            workoutExerciseNames,
-            allExercises,
-            exerciseAliasMap,
-            callbacks.isQuickStart // Only allow new exercise detection in Quick Start mode
-          );
+          // IMPORTANT: Skip exercise detection if text contains completion words to avoid false matches
+          // (e.g., "done" should not be matched as "dumb" for dumbbell)
+          const containsCompletionWord = /\b(done|completed|finished|finish|got it|complete|all done|that's it|finished that)\b/i.test(normalizedText);
+          let detected = null;
+          
+          // LOG: Raw transcription
+          console.log('[VOICE PARSER] Raw transcript:', normalizedTranscript);
+          console.log('[VOICE PARSER] Current exercise context:', currentEx?.name || 'None');
+          console.log('[VOICE PARSER] Quick Start mode:', callbacks.isQuickStart);
+          
+          // Only try to detect exercises if the text doesn't appear to be a completion command
+          // If it's a standalone completion word, skip exercise detection entirely
+          const isOnlyCompletionWord = /^(done|completed|finished|finish|got it|complete|all done|that's it|finished that)$/i.test(text.trim());
+          
+          if (!isOnlyCompletionWord && !(containsCompletionWord && callbacks.currentPlanIdx !== null)) {
+            // Use cached recent exercises for Quick Start mode (optimized for speed)
+            // This avoids re-computing the list on every voice input
+            const recentExercises = callbacks.isQuickStart 
+              ? recentQuickStartExercises
+              : [];
+            
+            console.log('[VOICE PARSER] Recent exercises in session:', recentExercises);
+            
+            // Pass isQuickStart mode and recent exercises for context-aware matching
+            // In Quick Start, only match against recent exercises (not full library) for speed
+            detected = findExerciseInText(
+              normalizedTranscript,
+              workoutExerciseNames,
+              allExercises,
+              exerciseAliasMap,
+              callbacks.isQuickStart, // Only allow new exercise detection in Quick Start mode
+              recentExercises // Pass recently used exercises for context (cached)
+            );
+            
+            console.log('[VOICE PARSER] Detected exercise:', detected ? {
+              name: detected.name,
+              inWorkout: detected.inWorkout,
+              score: detected.score,
+              isQuickStart: detected.isQuickStart,
+              fromDatabase: detected.fromDatabase,
+              isRecent: detected.isRecent
+            } : 'None');
+          } else {
+            console.log('[VOICE PARSER] Skipping exercise detection (completion command detected)');
+          }
+          
+          // Additional safety: If "dumb" or "dumbbell" is detected but we're in an active set context
+          // and the text also contains completion words, prioritize completion command
+          // Also: If speech-to-text transcribes "done" as "dumb", this will catch it
+          if (detected && (detected.name.toLowerCase().includes('dumb') || detected.name.toLowerCase() === 'dumbbell')) {
+            const hasCompletionContext = containsCompletionWord && callbacks.currentPlanIdx !== null;
+            const isJustDumb = /^(dumb|dumbbell)$/i.test(text.trim());
+            const hasActiveExercise = callbacks.currentPlanIdx !== null && callbacks.workoutPlan[callbacks.currentPlanIdx];
+            
+            // If user says just "dumb" and we're in an active set, likely meant "done" (common STT error)
+            if (isJustDumb && hasActiveExercise && !normalizedText.match(/\b(dumbbell|dumb\s+(curl|press|fly|raise|row|lunge|extension|kickback|shrug|overhead|side|front|rear))\b/i)) {
+              // This looks like "done" misheard as "dumb"
+              // Treat as completion command instead
+              const currentEx = callbacks.workoutPlan[callbacks.currentPlanIdx] || null;
+              if (currentEx) {
+                const targetWeight = currentEx.weight || null;
+                const targetReps = currentEx.reps || null;
+                
+                if (targetWeight !== null && targetReps !== null) {
+                  const result = {
+                    exercise: currentEx.name,
+                    weight: targetWeight,
+                    reps: targetReps,
+                    sets: 1,
+                    isQuickComplete: true,
+                    rawText: normalizedTranscript,
+                    needsConfirmation: [],
+                  };
+                  
+                  handleConfirmedResult(result);
+                  setIsProcessingVoice(false);
+                  return; // Don't parse as exercise name
+                }
+              }
+            }
+            
+            if (hasCompletionContext) {
+              // Likely false positive - user probably meant "done", not "dumbbell"
+              // Skip this detection and let completion handling take over (already handled in STEP 1)
+              detected = null;
+            }
+          }
           
           // STEP 3: Handle detected exercise based on mode and workout status
+          // CRITICAL: In Quick Start mode, if ANY exercise is detected, it MUST override current context
           if (detected) {
             const currentExerciseName = currentEx?.name || null;
             const isDifferentExercise = currentExerciseName && 
               detected.name.toLowerCase() !== currentExerciseName.toLowerCase();
             
-            if (detected.inWorkout && detected.index !== undefined) {
-              // Exercise is in workout
+            console.log('[VOICE PARSER] Exercise switching decision:', {
+              detected: detected.name,
+              current: currentExerciseName,
+              isDifferent: isDifferentExercise,
+              inWorkout: detected.inWorkout,
+              isQuickStart: detected.isQuickStart
+            });
+            
+            // In Quick Start mode, ANY detected exercise should trigger a switch
+            // Even if it's similar to current, the explicit mention means user wants to switch
+            if (callbacks.isQuickStart && detected.name) {
+              // Quick Start mode: Detected exercise always becomes the active exercise
+              // This ensures "squats 100kg 8 reps" after "deadlift 80kg 5 reps" switches to squats
+              console.log('[VOICE PARSER] QUICK START: Switching to detected exercise:', detected.name);
+              
+              // Update the detected exercise state (this will be used for logging)
+              setDetectedExercise(detected.name);
+              
+              // In Quick Start, we don't use workoutPlan indices, but we still track the exercise
+              // Continue with parsing - the detected exercise will override any context
+            } else if (detected.inWorkout && detected.index !== undefined) {
+              // Exercise is in workout (non-Quick Start mode)
               if (isDifferentExercise) {
                 // Switch to detected exercise
+                console.log('[VOICE PARSER] Switching to workout exercise:', detected.name);
                 callbacks.setCurrentPlanIdx(detected.index);
                 setExerciseTransitionKey(prev => prev + 1); // Trigger smooth transition
                 speakMessage(`Switched to ${detected.name}`);
@@ -407,19 +758,34 @@ export default function FocusMode() {
               }
               // Continue with parsing using detected exercise...
             } else {
-              // Exercise NOT in workout - found in library
+              // Exercise NOT in workout - found in library or suggested from transcript
               // Only show add modal in Quick Start mode
               if (callbacks.isQuickStart) {
-                // Auto-save to custom exercises if it doesn't exist (Quick Start only)
-                if (!exerciseExists(detected.name)) {
-                  autoSaveExerciseFromVoice(detected.name);
+                // Check if exercise exists in database (core or custom) - don't auto-save yet
+                const existsInDb = exerciseExists(detected.name);
+                
+                console.log('[VOICE PARSER] Quick Start: Exercise exists in DB:', existsInDb, detected.name);
+                
+                // If it's a new exercise (not in database), check for similar exercises in database
+                let suggestedExercises = [];
+                if (!existsInDb && detected.needsDatabaseCheck !== false) {
+                  // Try to find similar exercises in the database using fuzzy matching
+                  // This helps catch misheard words like "Income" → "Incline" or other close matches
+                  const matches = findBestMatches(detected.name, allExercises, 0.4);
+                  if (matches.length > 0) {
+                    suggestedExercises = matches.slice(0, 3).map(m => m.exercise.name);
+                    console.log('[VOICE PARSER] Suggested exercises:', suggestedExercises);
+                  }
                 }
                 
                 // Show add modal for Quick Start mode
+                // If suggestions found, show them; if exercise exists in DB, just confirm; otherwise offer to add custom
                 setPendingExerciseAdd({
                   exerciseName: detected.name,
                   transcription: normalizedTranscript,
                   isQuickStart: true,
+                  existsInDatabase: existsInDb,
+                  suggestedExercises: suggestedExercises, // Show similar exercises from database if found
                   currentContext: {
             currentExercise: currentEx?.name || null,
             lastWeight: null,
@@ -429,6 +795,7 @@ export default function FocusMode() {
                   }
                 });
                 setIsProcessingVoice(false); // Clear loading while waiting for confirmation
+                console.log('[VOICE PARSER] Showing add exercise modal for:', detected.name);
                 // Don't proceed with parsing - wait for user to confirm
                 return;
               } else {
@@ -466,15 +833,40 @@ export default function FocusMode() {
           }
           
           // STEP 4: Build context for parsing
-          // Use detected exercise if found, otherwise use current
-          const exerciseForParsing = detected && detected.inWorkout && detected.index !== undefined
-            ? callbacks.workoutPlan[detected.index]
-            : currentEx;
+          // CRITICAL FIX: In Quick Start mode, detected exercise ALWAYS overrides current context
+          // This ensures "squats 100kg 8 reps" switches to squats even if deadlift was last logged
+          let exerciseForParsing = null;
+          let exerciseNameForParsing = null;
           
-          const exerciseNameForParsing = detected?.name || exerciseForParsing?.name || null;
+          if (callbacks.isQuickStart) {
+            // Quick Start mode: Use detected exercise if found, otherwise check recent exercises
+            if (detected && detected.name) {
+              // Detected exercise always wins in Quick Start
+              exerciseNameForParsing = detected.name;
+              console.log('[VOICE PARSER] Using detected exercise for Quick Start:', exerciseNameForParsing);
+            } else if (callbacks.additionalExercises && callbacks.additionalExercises.length > 0) {
+              // No new exercise detected - use most recent exercise from this session
+              const mostRecent = callbacks.additionalExercises[callbacks.additionalExercises.length - 1];
+              exerciseNameForParsing = mostRecent?.name || null;
+              console.log('[VOICE PARSER] No exercise detected, using most recent:', exerciseNameForParsing);
+            } else {
+              // No exercises logged yet in Quick Start
+              exerciseNameForParsing = null;
+            }
+          } else {
+            // Non-Quick Start mode: Use detected exercise from workout plan if found
+            exerciseForParsing = detected && detected.inWorkout && detected.index !== undefined
+              ? callbacks.workoutPlan[detected.index]
+              : currentEx;
+            
+            exerciseNameForParsing = detected?.name || exerciseForParsing?.name || null;
+          }
+          
+          console.log('[VOICE PARSER] Final exercise name for parsing:', exerciseNameForParsing);
           
           // In Quick Start mode, if no exercise detected and no current, show error
           if (callbacks.isQuickStart && !exerciseNameForParsing) {
+            console.log('[VOICE PARSER] ERROR: No exercise identified in Quick Start mode');
             setError('Could not identify exercise. Please say the exercise name clearly.');
             setIsProcessingVoice(false);
             return;
@@ -492,6 +884,11 @@ export default function FocusMode() {
               ex => ex.name?.toLowerCase() === exerciseNameForParsing.toLowerCase()
             );
             isFirstSetQuickStart = !existingExercise;
+            console.log('[VOICE PARSER] Quick Start first set check:', {
+              exercise: exerciseNameForParsing,
+              existing: !!existingExercise,
+              isFirstSet: isFirstSetQuickStart
+            });
           }
 
           const context = {
@@ -513,11 +910,21 @@ export default function FocusMode() {
               ex => ex.name?.toLowerCase() === exerciseNameForParsing.toLowerCase()
             ) || [];
             if (exerciseLogs.length > 0) {
+              // Get the LAST logged set of this exercise (most recent)
               const lastExerciseLog = exerciseLogs[exerciseLogs.length - 1];
               context.lastWeight = lastExerciseLog.weight || null;
               context.lastReps = lastExerciseLog.reps || null;
+              console.log('[VOICE PARSER] Using last logged set context:', {
+                exercise: exerciseNameForParsing,
+                lastWeight: context.lastWeight,
+                lastReps: context.lastReps
+              });
+            } else {
+              console.log('[VOICE PARSER] No previous sets found for:', exerciseNameForParsing);
             }
           }
+          
+          console.log('[VOICE PARSER] Parsing context:', context);
 
           // STEP 5: Parse weight/reps with Claude
           const result = await parseWorkoutWithClaude(normalizedTranscript, {
@@ -533,12 +940,16 @@ export default function FocusMode() {
 
           // CRITICAL: Override exercise name with detected exercise if found
           // This ensures we log to the correct exercise, not the one Claude might return
+          // In Quick Start mode, detected exercise ALWAYS wins - this fixes the switching issue
           if (detected && detected.name) {
+            console.log('[VOICE PARSER] Overriding result.exercise with detected:', detected.name);
             result.exercise = detected.name;
           } else if (exerciseNameForParsing) {
             // Use the exercise we determined, not what Claude might return
+            console.log('[VOICE PARSER] Using exerciseNameForParsing:', exerciseNameForParsing);
             result.exercise = exerciseNameForParsing;
           } else if (result.exercise && !exerciseExists(result.exercise)) {
+            console.log('[VOICE PARSER] Claude returned unknown exercise:', result.exercise);
             // Claude extracted an exercise name that doesn't exist
             // Only auto-save in Quick Start mode
             if (callbacks.isQuickStart) {
@@ -551,9 +962,49 @@ export default function FocusMode() {
             }
           }
 
+          console.log('[VOICE PARSER] Final parsed result:', {
+            exercise: result.exercise,
+            weight: result.weight,
+            reps: result.reps,
+            isBodyweight: result.isBodyweight,
+            needsConfirmation: result.needsConfirmation,
+            isHighConfidence: result.isHighConfidence
+          });
+
           setAiParsed(result);
 
+          // Auto-log high-confidence matches without confirmation (Quick Start optimization)
           const needsConfirmation = result.needsConfirmation && result.needsConfirmation.length > 0;
+          const isHighConfidence = result.isHighConfidence === true; // High confidence from parser
+          
+          console.log('[VOICE PARSER] Auto-log decision:', {
+            isQuickStart: callbacks.isQuickStart,
+            isHighConfidence,
+            needsConfirmation,
+            hasAllData: !!(result.exercise && result.reps && (result.weight !== undefined || result.isBodyweight)),
+            detectedScore: detected?.score
+          });
+          
+          // In Quick Start mode, auto-log high-confidence matches (exercise + reps + weight all clear)
+          // Only require confirmation for genuinely ambiguous cases
+          if (callbacks.isQuickStart && isHighConfidence && !needsConfirmation) {
+            // Auto-log immediately - everything is clear
+            console.log('[VOICE PARSER] Auto-logging (high confidence):', result.exercise);
+            handleConfirmedResult(result);
+            setIsProcessingVoice(false);
+            return;
+          }
+          
+          // Also auto-log if exercise is detected with high score (>0.85) and all data is present
+          if (detected && detected.score >= 0.85 && result.exercise && result.reps && 
+              (result.weight !== undefined || result.isBodyweight) && !needsConfirmation) {
+            // High confidence match - auto-log
+            console.log('[VOICE PARSER] Auto-logging (high detection score):', result.exercise);
+            handleConfirmedResult(result);
+            setIsProcessingVoice(false);
+            return;
+          }
+          
           if (needsConfirmation) {
             setPendingConfirmation({ result, isQuickStart: callbacks.isQuickStart });
             setPendingEditValues({
@@ -570,6 +1021,7 @@ export default function FocusMode() {
             return;
           }
 
+          console.log('[VOICE PARSER] Logging result via handleConfirmedResult:', result.exercise);
           handleConfirmedResult(result);
           setIsProcessingVoice(false); // Clear loading
 
@@ -597,7 +1049,7 @@ export default function FocusMode() {
           setTimeout(() => {
             isRecordingActiveRef.current = false;
             recordingStartTimeRef.current = null;
-            setListening(false);
+        setListening(false);
           }, minRecordingTime - elapsed);
         } else {
           // Normal stop - update state immediately
@@ -632,6 +1084,14 @@ export default function FocusMode() {
   const handleConfirmedResult = (result) => {
     const callbacks = callbacksRef.current;
     
+    console.log('[HANDLE CONFIRMED] Logging exercise:', {
+      exercise: result.exercise,
+      weight: result.weight,
+      reps: result.reps,
+      isBodyweight: result.isBodyweight,
+      isQuickStart: callbacks.isQuickStart
+    });
+    
     // Check for Personal Record BEFORE logging
     let detectedPR = null;
     if (result.exercise && result.weight && result.reps && !result.isBodyweight) {
@@ -654,7 +1114,15 @@ export default function FocusMode() {
 
     if (callbacks.isQuickStart) {
       if (result.exercise) {
-        callbacks.addAdditionalExercise({ ...result, complete: true });
+        // Ensure the exercise name is properly mapped to 'name' property
+        callbacks.addAdditionalExercise({ 
+          name: result.exercise, // Map 'exercise' to 'name'
+          reps: result.reps || 0,
+          weight: result.isBodyweight ? 0 : (result.weight || 0),
+          sets: result.sets || 1,
+          isBodyweight: result.isBodyweight || false,
+          complete: true 
+        });
         speakMessage('Logged');
         setCelebrateSet(true); playSuccessTone();
         setTimeout(()=> setCelebrateSet(false), 700);
@@ -668,7 +1136,7 @@ export default function FocusMode() {
         const setsInPlan = callbacks.workoutPlan[idx].sets || 1;
         const prevProgress = (callbacks.setProgress?.[exName]?.progress || 0);
         const nextProgress = Math.min(prevProgress + 1, setsInPlan);
-        callbacks.logSetCompletion({ exercise: exName, reps: result.reps || 0, weight: result.isBodyweight ? 0 : (result.weight ?? 0), sets: setsInPlan });
+        callbacks.logSetCompletion({ exercise: exName, reps: result.reps || 0, weight: result.isBodyweight ? 0 : (result.weight ?? 0), sets: setsInPlan, isBodyweight: result.isBodyweight || false });
         speakMessage('Logged');
         callbacks.startRest(callbacks.restDuration, exName);
         setCelebrateSet(true); playSuccessTone();
@@ -693,7 +1161,15 @@ export default function FocusMode() {
           }, 900);
         }
       } else if(result.exercise) {
-        callbacks.addAdditionalExercise({ ...result, complete: true });
+        // Ensure the exercise name is properly mapped to 'name' property
+        callbacks.addAdditionalExercise({ 
+          name: result.exercise, // Map 'exercise' to 'name'
+          reps: result.reps || 0,
+          weight: result.isBodyweight ? 0 : (result.weight || 0),
+          sets: result.sets || 1,
+          isBodyweight: result.isBodyweight || false,
+          complete: true 
+        });
       }
     }
 
@@ -715,6 +1191,7 @@ export default function FocusMode() {
         exercise: result.exercise,
         weight: result.isBodyweight ? 0 : (result.weight ?? 0),
         reps: result.reps ?? 0,
+        isBodyweight: result.isBodyweight || false,
       };
       console.log('Updated lastLoggedSet', lastLoggedSetRef.current);
     }
@@ -761,7 +1238,20 @@ export default function FocusMode() {
     if (!pendingExerciseAdd) return;
     
     const callbacks = callbacksRef.current;
-    const { exerciseName, transcription, currentContext, isQuickStart } = pendingExerciseAdd;
+    const { exerciseName, transcription, currentContext, isQuickStart, existsInDatabase } = pendingExerciseAdd;
+    
+    console.log('[HANDLE CONFIRM ADD] Adding exercise:', {
+      exerciseName,
+      isQuickStart,
+      existsInDatabase,
+      transcription
+    });
+    
+    // If exercise doesn't exist in database, save it as a custom exercise
+    if (!existsInDatabase && !exerciseExists(exerciseName)) {
+      autoSaveExerciseFromVoice(exerciseName);
+      console.log('[HANDLE CONFIRM ADD] Auto-saved new exercise:', exerciseName);
+    }
     
     // Check if this is the first set of this exercise
     let isFirstSet = true;
@@ -808,16 +1298,31 @@ export default function FocusMode() {
         return;
       }
       
-      // CRITICAL: Override with detected exercise name
-      result.exercise = exerciseName;
-      
-      // Add exercise to workout plan (as additional exercise) with parsed data
-      if (isQuickStart) {
-        // In Quick Start, add with the parsed weight/reps
-        callbacks.addAdditionalExercise({ 
-          ...result, 
-          complete: true 
-        });
+             // CRITICAL: Override with detected exercise name
+             // This ensures we log to the NEW exercise, not the old one
+             result.exercise = exerciseName;
+             
+             console.log('[HANDLE CONFIRM ADD] Final result before logging:', {
+               exercise: result.exercise,
+               weight: result.weight,
+               reps: result.reps,
+               isBodyweight: result.isBodyweight
+             });
+
+             // Add exercise to workout plan (as additional exercise) with parsed data
+             if (isQuickStart) {
+               // In Quick Start, add with the parsed weight/reps
+               // Ensure the exercise name is properly mapped to 'name' property
+               // CRITICAL: This exercise becomes the new active exercise context
+               console.log('[HANDLE CONFIRM ADD] Adding to Quick Start:', exerciseName);
+               callbacks.addAdditionalExercise({
+                 name: exerciseName, // Use the confirmed exercise name
+                 reps: result.reps || 0,
+                 weight: result.isBodyweight ? 0 : (result.weight || 0),
+                 sets: result.sets || 1,
+                 isBodyweight: result.isBodyweight || false,
+                 complete: true
+               });
       } else {
         // In regular mode, add as additional exercise
         callbacks.addAdditionalExercise({ 
@@ -883,6 +1388,7 @@ export default function FocusMode() {
           exercise: exerciseName,
           weight: result.isBodyweight ? 0 : (result.weight ?? 0),
           reps: result.reps ?? 0,
+          isBodyweight: result.isBodyweight || false,
         };
       }
       
@@ -945,11 +1451,10 @@ export default function FocusMode() {
 
   return (
     <div 
-      className="h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-start relative overflow-hidden"
+      className="min-h-screen w-full max-w-[375px] mx-auto px-4 flex flex-col items-center justify-start relative overflow-y-auto overflow-x-hidden"
       style={{ 
-        height: '100vh',
-        height: '100dvh', // Use dynamic viewport height for mobile
-        overflow: 'hidden',
+        minHeight: '100vh',
+        minHeight: '100dvh', // Use dynamic viewport height for mobile
         background: '#0a0a0a' // Soft charcoal background
       }}
     >
@@ -959,8 +1464,8 @@ export default function FocusMode() {
         <span className="text-xs" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.8 }}>{isOnline ? 'Online' : 'Offline'}</span>
       </div>
 
-      {/* Scrollable Content Container */}
-      <div className="w-full flex-1 flex flex-col items-center justify-center pt-8 pb-4 overflow-y-auto overflow-x-hidden">
+      {/* Content Container */}
+      <div className="w-full flex flex-col items-center pt-8 pb-32">
       {/* Title */}
         <h2 className="text-[#e5e5e5] text-base font-medium mb-3" style={{ color: '#e5e5e5', fontWeight: 400 }}>{isQuickStart ? 'Quick Start' : 'Focus Mode'}</h2>
 
@@ -987,10 +1492,10 @@ export default function FocusMode() {
                   // Too soon to stop, wait a bit
                   setTimeout(() => {
                     if (isRecordingActiveRef.current) {
-                      ctrlRef.current?.stop();
+              ctrlRef.current?.stop();
                     }
                   }, minRecordingTime - elapsed);
-                } else {
+            } else {
                   ctrlRef.current?.stop();
                 }
               } else {
@@ -999,8 +1504,8 @@ export default function FocusMode() {
                 if (!isRecordingActiveRef.current) {
                   isRecordingActiveRef.current = true;
                   recordingStartTimeRef.current = Date.now();
-                  ctrlRef.current?.start();
-                }
+              ctrlRef.current?.start();
+            }
               }
               
               clickDebounceRef.current = null;
@@ -1065,15 +1570,14 @@ export default function FocusMode() {
       {/* Subtle Divider */}
       <div className="w-full h-px bg-white/8 mb-3" />
 
-      {/* Below mic card, show last parsed AI result or error in glassy card */}
+      {/* Below mic card, show last parsed AI result (no error - errors shown in toast only) */}
         <div className="w-full mb-3 min-h-[2.5em] flex justify-center">
         {aiParsed && !aiParsed.error && (
           <div className="rounded-xl px-4 py-3 text-center space-y-1 min-w-[225px]" style={{ background: 'rgba(255, 255, 255, 0.06)', border: '1px solid rgba(255, 255, 255, 0.08)', boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)' }}>
             <div className="font-medium text-base" style={{ color: '#f5f5f5', fontWeight: 500 }}>Logged: {aiParsed.exercise}</div>
-            <div className="text-sm" style={{ color: '#e5e5e5', fontWeight: 400 }}>{aiParsed.weight} kg × {aiParsed.reps} reps</div>
+            <div className="text-sm" style={{ color: '#e5e5e5', fontWeight: 400 }}>{formatWeightDisplay(aiParsed.weight || 0, aiParsed.isBodyweight || false, aiParsed.exercise)} × {aiParsed.reps} reps</div>
           </div>
         )}
-        {error && <span className="inline-block px-3 py-2 rounded-xl bg-rose-600/70 text-xs" style={{ color: '#f5f5f5', fontWeight: 400 }}>{error}</span>}
       </div>
 
         {/* Quick Start: Show logged exercises list - Internally scrollable if needed */}
@@ -1088,12 +1592,14 @@ export default function FocusMode() {
             <div className="text-[#f5f5f5] text-sm mb-3 flex-shrink-0" style={{ color: '#f5f5f5', fontWeight: 500 }}>Logged Exercises</div>
           {additionalExercises && additionalExercises.length > 0 ? (
               <div className="space-y-3 overflow-y-auto flex-1" style={{ maxHeight: 'calc(40vh - 60px)' }}>
-              {additionalExercises.map((ex, idx) => {
-                const isEditing = editingExerciseIndex === idx;
+              {[...additionalExercises].reverse().map((ex, displayIdx) => {
+                // Map display index back to original index (since array is reversed)
+                const originalIdx = additionalExercises.length - 1 - displayIdx;
+                const isEditing = editingExerciseIndex === originalIdx;
                 const editValues = isEditing ? editingExerciseValues : null;
                 
                 return (
-                  <div key={idx} className="rounded-xl p-4" style={{
+                  <div key={ex.id || ex.timestamp || originalIdx} className="rounded-xl p-4" style={{
                     background: 'rgba(255, 255, 255, 0.03)',
                     border: '1px solid rgba(255, 255, 255, 0.08)',
                     boxShadow: '0 1px 4px rgba(0, 0, 0, 0.15)'
@@ -1169,7 +1675,7 @@ export default function FocusMode() {
                             Cancel
                           </button>
                           <button
-                            onClick={() => handleDeleteExercise(idx)}
+                            onClick={() => handleDeleteExercise(originalIdx)}
                             className="h-11 px-4 rounded-xl bg-rose-500/20 text-rose-300 border border-rose-400/30 text-sm btn-press tap-target"
                           >
                             Delete
@@ -1180,15 +1686,17 @@ export default function FocusMode() {
                       /* View Mode */
                       <div className="flex items-center justify-between">
                         <div className="flex-1 min-w-0">
-                          <div className="truncate" style={{ color: '#f5f5f5', fontWeight: 600 }}>{ex.name}</div>
+                          <div className="text-base mb-1.5" style={{ color: '#f5f5f5', fontWeight: 600, fontSize: '16px' }}>
+                            {ex.name || 'Unnamed Exercise'}
+                          </div>
                           <div className="text-xs mt-1" style={{ color: '#e5e5e5', fontWeight: 400, opacity: 0.7, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>
-                    {ex.weight} kg × {ex.reps} reps
+                            {formatWeightDisplay(ex.weight || 0, ex.isBodyweight || false, ex.name)} × {ex.reps} reps
                     {ex.sets > 1 && ` × ${ex.sets} sets`}
                 </div>
                         </div>
                         <button
-                          onClick={() => handleStartEditExercise(idx)}
-                          className="ml-3 px-3 h-9 rounded-xl bg-white/10 text-white border border-white/20 text-xs font-medium btn-press tap-target hover:bg-white/15"
+                          onClick={() => handleStartEditExercise(originalIdx)}
+                          className="ml-3 px-3 h-9 rounded-xl bg-white/10 text-white border border-white/20 text-xs font-medium btn-press tap-target hover:bg-white/15 flex-shrink-0"
                         >
                           Edit
                         </button>
@@ -1228,7 +1736,9 @@ export default function FocusMode() {
             const hasActual = progress > 0 && (lastSetVals.reps !== undefined || lastSetVals.weight !== undefined);
             const showingActuals = hasActual && restVisible;
             const displayReps = showingActuals && lastSetVals.reps !== undefined ? lastSetVals.reps : (ex.reps || 8);
-            const displayWeight = showingActuals && lastSetVals.weight !== undefined ? lastSetVals.weight : (ex.weight || 60);
+            const displayWeightRaw = showingActuals && lastSetVals.weight !== undefined ? lastSetVals.weight : (ex.weight || 60);
+            const isBodyweightSet = lastSetVals.isBodyweight || (displayWeightRaw === 0 && BODYWEIGHT_EXERCISES.has(ex.name));
+            const displayWeight = formatWeightDisplay(displayWeightRaw, isBodyweightSet, ex.name);
             const isTarget = !showingActuals;
             return <>
               <div className="rounded-xl bg-white/5 border border-white/10 p-4 text-center" style={{ boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)' }}>
@@ -1268,7 +1778,7 @@ export default function FocusMode() {
                   opacity: isTarget ? 0.6 : 1,
                   fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)'
                 }}>
-                  {displayWeight} kg
+                  {displayWeight}
                 </div>
                 {isTarget && (
                   <div className="text-[10px] mt-1" style={{ color: '#e5e5e5', fontWeight: 300, opacity: 0.4 }}>(target)</div>
@@ -1279,12 +1789,32 @@ export default function FocusMode() {
         </div>
         {/* Subtle Divider */}
         <div className="w-full h-px bg-white/8 my-3" />
-        <div className="text-[#e5e5e5]/70 text-sm" style={{ color: '#e5e5e5', fontWeight: 400, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>Previous: 82 kg × 8</div>
+        {(() => {
+          const ex = workoutPlan[currentPlanIdx] || { name: '', sets: 1, reps: 8, weight: 60 };
+          const values = (setProgress?.[ex.name]?.values || []);
+          if (values.length > 0) {
+            const lastSet = values[values.length - 1];
+            const lastWeightRaw = lastSet.weight !== undefined ? lastSet.weight : (ex.weight || 60);
+            const lastIsBodyweight = lastSet.isBodyweight || (lastWeightRaw === 0 && BODYWEIGHT_EXERCISES.has(ex.name));
+            const lastWeightDisplay = formatWeightDisplay(lastWeightRaw, lastIsBodyweight, ex.name);
+            const lastReps = lastSet.reps !== undefined ? lastSet.reps : (ex.reps || 8);
+            return (
+              <div className="text-[#e5e5e5]/70 text-sm" style={{ color: '#e5e5e5', fontWeight: 400, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>
+                Previous: {lastWeightDisplay} × {lastReps}
+              </div>
+            );
+          }
+          return (
+            <div className="text-[#e5e5e5]/70 text-sm" style={{ color: '#e5e5e5', fontWeight: 400, fontFamily: 'var(--font-numbers, "Inter Tight", -apple-system, sans-serif)' }}>
+              Previous: {formatWeightDisplay(ex.weight || 60, BODYWEIGHT_EXERCISES.has(ex.name), ex.name)} × {ex.reps || 8}
+            </div>
+          );
+        })()}
       </div>
       )}
 
       </div>
-      {/* End Scrollable Content Container */}
+      {/* End Content Container */}
 
       {/* Celebration overlays */}
       {celebrateSet && (
@@ -1579,9 +2109,32 @@ export default function FocusMode() {
 
       {/* Error Toast */}
       {error && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="pulse-glass rounded-full px-4 py-2 border border-rose-400/40 bg-rose-500/20 text-white text-xs font-medium shadow-xl backdrop-blur-md">
+        <div 
+          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 transition-opacity duration-300 ${
+            errorVisible ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <div 
+            className="pulse-glass rounded-full px-4 py-2 border border-rose-400/40 bg-rose-500/20 text-white text-xs font-medium shadow-xl backdrop-blur-md relative overflow-hidden cursor-pointer"
+            onClick={dismissError}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissError();
+              }
+            }}
+          >
             {error}
+            {/* Progress bar indicator */}
+            <div 
+              className="absolute bottom-0 left-0 h-0.5 bg-white/40 transition-all duration-100"
+              style={{ 
+                width: `${errorProgress}%`,
+                transition: 'width 100ms linear'
+              }}
+            />
           </div>
         </div>
       )}
@@ -1605,12 +2158,55 @@ export default function FocusMode() {
           <div className="absolute inset-0 bg-black/60" onClick={handleCancelAddExercise} />
           <div className="absolute inset-x-0 bottom-0 px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-4">
             <div className="pulse-glass rounded-2xl p-4 border border-white/20 shadow-xl">
-              <div className="text-white text-sm font-semibold mb-2">
-                Add Exercise to Workout?
-              </div>
-              <div className="text-white/70 text-xs mb-4">
-                Did you want to add <span className="text-white font-semibold">{pendingExerciseAdd.exerciseName}</span> to this workout?
-              </div>
+              {pendingExerciseAdd.existsInDatabase ? (
+                // Exercise exists in database - just confirm adding to workout
+                <>
+                  <div className="text-white text-sm font-semibold mb-2">
+                    Add Exercise to Workout?
+                  </div>
+                  <div className="text-white/70 text-xs mb-4">
+                    Did you want to add <span className="text-white font-semibold">{pendingExerciseAdd.exerciseName}</span> to this workout?
+                  </div>
+                </>
+              ) : pendingExerciseAdd.suggestedExercises && pendingExerciseAdd.suggestedExercises.length > 0 ? (
+                // Similar exercises found - suggest those instead
+                <>
+                  <div className="text-white text-sm font-semibold mb-2">
+                    Exercise Not Found
+                  </div>
+                  <div className="text-white/70 text-xs mb-2">
+                    "{pendingExerciseAdd.exerciseName}" isn't in the database. Did you mean:
+                  </div>
+                  <div className="space-y-2 mb-4 max-h-[200px] overflow-y-auto">
+                    {pendingExerciseAdd.suggestedExercises.map((suggested, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setPendingExerciseAdd(prev => ({ ...prev, exerciseName: suggested, existsInDatabase: true }));
+                          // Automatically confirm with the suggested exercise
+                          setTimeout(() => handleConfirmAddExercise(), 100);
+                        }}
+                        className="w-full text-left px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-xs hover:bg-white/10 transition-colors"
+                      >
+                        {suggested}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-white/50 text-[10px] mb-4 text-center">
+                    Or add "{pendingExerciseAdd.exerciseName}" as a custom exercise
+                  </div>
+                </>
+              ) : (
+                // No similar exercises - offer to add as custom exercise
+                <>
+                  <div className="text-white text-sm font-semibold mb-2">
+                    Add Custom Exercise?
+                  </div>
+                  <div className="text-white/70 text-xs mb-4">
+                    "{pendingExerciseAdd.exerciseName}" isn't in the database. Would you like to add it to your exercise library?
+                  </div>
+                </>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCancelAddExercise}
@@ -1622,7 +2218,7 @@ export default function FocusMode() {
                   onClick={handleConfirmAddExercise}
                   className="flex-1 h-10 rounded-full bg-emerald-400 text-slate-900 text-xs font-semibold"
                 >
-                  Add & Log
+                  {pendingExerciseAdd.existsInDatabase ? 'Add & Log' : 'Add to Library & Log'}
                 </button>
               </div>
             </div>

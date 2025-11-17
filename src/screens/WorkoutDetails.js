@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkout } from '../state/WorkoutContext';
-import { FLAT_EXERCISES } from '../data/exerciseLibrary';
+import { FLAT_EXERCISES, BODYWEIGHT_EXERCISES } from '../data/exerciseLibrary';
 
 // Muscle Group Diagram Component
 function MuscleGroupDiagram({ stats }) {
@@ -156,7 +156,7 @@ function MuscleGroupDiagram({ stats }) {
 
 export default function WorkoutDetails() {
   const navigate = useNavigate();
-  const { workoutPlan = [], setProgress = {}, workoutStartAt, additionalExercises = [], endWorkout } = useWorkout();
+  const { workoutPlan = [], setProgress = {}, workoutStartAt, additionalExercises = [], endWorkout, prefs } = useWorkout();
 
   const { exerciseList, totals, muscleGroupStats } = useMemo(() => {
     const exercises = [];
@@ -192,10 +192,20 @@ export default function WorkoutDetails() {
       if (completedSets > 0) {
         totalSets += completedSets;
         
-        // Calculate volume for this exercise
+        // Calculate volume for this exercise (check setting for bodyweight)
         let exerciseVolume = 0;
+        const countBodyweightInVolume = prefs?.countBodyweightInVolume || false;
+        const userBodyWeight = prefs?.userBodyWeight || 0;
         values.forEach(v => {
           const r = parseInt(v?.reps || 0, 10) || 0;
+          if (v?.isBodyweight) {
+            // If setting is enabled and user body weight is set, use it for volume calculation
+            if (countBodyweightInVolume && userBodyWeight > 0) {
+              exerciseVolume += r * userBodyWeight;
+            }
+            // Otherwise, skip (count as 0)
+            return;
+          }
           const w = parseInt(v?.weight || 0, 10) || 0;
           exerciseVolume += r * w;
         });
@@ -211,7 +221,8 @@ export default function WorkoutDetails() {
         const sets = values.map((v, i) => ({
           setNumber: i + 1,
           reps: v.reps || ex.reps || 0,
-          weight: v.weight || ex.weight || 0
+          weight: v.weight || ex.weight || 0,
+          isBodyweight: v.isBodyweight || false
         }));
 
         exercises.push({
@@ -224,9 +235,21 @@ export default function WorkoutDetails() {
     });
 
     // Process additional exercises
+    const countBodyweightInVolume = prefs?.countBodyweightInVolume || false;
+    const userBodyWeight = prefs?.userBodyWeight || 0;
     additionalExercises.forEach(ex => {
-      if (ex.complete && ex.sets && ex.reps && ex.weight) {
-        const exerciseVolume = ex.sets * ex.reps * ex.weight;
+      if (ex.complete && ex.sets && ex.reps && (ex.weight !== undefined || ex.isBodyweight)) {
+        // Calculate volume based on setting
+        let exerciseVolume = 0;
+        if (ex.isBodyweight) {
+          // If setting is enabled and user body weight is set, use it for volume calculation
+          if (countBodyweightInVolume && userBodyWeight > 0) {
+            exerciseVolume = ex.sets * ex.reps * userBodyWeight;
+          }
+          // Otherwise, count as 0
+        } else {
+          exerciseVolume = ex.sets * ex.reps * (ex.weight || 0);
+        }
         totalSets += ex.sets;
         totalVolume += exerciseVolume;
 
@@ -241,7 +264,8 @@ export default function WorkoutDetails() {
           sets: Array.from({ length: ex.sets }, (_, i) => ({
             setNumber: i + 1,
             reps: ex.reps,
-            weight: ex.weight
+            weight: ex.weight || 0,
+            isBodyweight: ex.isBodyweight || false
           })),
           totalSets: ex.sets,
           volume: exerciseVolume
@@ -272,7 +296,7 @@ export default function WorkoutDetails() {
       },
       muscleGroupStats: muscleGroupPercentages
     };
-  }, [workoutPlan, setProgress, workoutStartAt, additionalExercises]);
+  }, [workoutPlan, setProgress, workoutStartAt, additionalExercises, prefs]);
 
   return (
     <div className="w-full max-w-[375px] px-4 pt-6 pb-28">
@@ -352,7 +376,9 @@ export default function WorkoutDetails() {
                   >
                     <span className="text-white/70 text-sm">Set {set.setNumber}</span>
                     <span className="text-white font-semibold">
-                      {set.weight} kg × {set.reps} reps
+                      {set.isBodyweight || (set.weight === 0 && BODYWEIGHT_EXERCISES.has(exercise.name))
+                        ? 'bodyweight' 
+                        : `${set.weight} kg`} × {set.reps} reps
                     </span>
                   </div>
                 ))}

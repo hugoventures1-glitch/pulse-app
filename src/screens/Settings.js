@@ -191,6 +191,8 @@ export default function Settings() {
   const weightUnit = profileForDisplay.unit || prefs?.units || 'kg';
   const voiceEnabled = prefs?.voiceFeedback !== false;
   const autoAdvanceEnabled = prefs?.autoAdvance !== false;
+  const countBodyweightInVolume = prefs?.countBodyweightInVolume || false;
+  const userBodyWeight = prefs?.userBodyWeight || null;
 
   const applyUnits = useCallback((unit) => {
     const normalizedUnit = unit === 'lbs' ? 'lbs' : 'kg';
@@ -238,6 +240,35 @@ export default function Settings() {
       if (window?.__toast) window.__toast(`Auto-advance ${nextValue ? 'enabled' : 'disabled'}`);
       return { ...prev, autoAdvance: nextValue };
     });
+  };
+
+  const toggleCountBodyweightInVolume = () => {
+    setPrefs((prev) => {
+      const nextValue = !(prev?.countBodyweightInVolume || false);
+      // If turning off, don't require body weight input
+      if (!nextValue) {
+        return { ...prev, countBodyweightInVolume: false };
+      }
+      // If turning on and no body weight set, keep it on but user needs to enter weight
+      return { ...prev, countBodyweightInVolume: true };
+    });
+  };
+
+  const handleBodyWeightChange = (value) => {
+    const parsed = parseFloat(value);
+    if (!isNaN(parsed) && parsed > 0) {
+      setPrefs((prev) => ({
+        ...prev,
+        userBodyWeight: parsed,
+        countBodyweightInVolume: true, // Enable if not already
+      }));
+    } else if (value === '') {
+      // Allow empty input
+      setPrefs((prev) => ({
+        ...prev,
+        userBodyWeight: null,
+      }));
+    }
   };
 
   // PR Management functions
@@ -691,6 +722,39 @@ export default function Settings() {
             >
               {autoAdvanceEnabled ? 'On' : 'Off'}
             </button>
+          </div>
+
+          <div className="pt-2 border-t border-white/10">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="text-white font-medium">Count bodyweight exercises in volume</div>
+                <div className="text-white/70 text-xs mt-1">Include bodyweight exercises in total volume calculations</div>
+              </div>
+              <button
+                onClick={toggleCountBodyweightInVolume}
+                className={`px-3 py-1 rounded-full text-sm border ${
+                  countBodyweightInVolume
+                    ? 'bg-white text-slate-900 border-transparent'
+                    : 'bg-white/10 text-white border-white/15'
+                }`}
+              >
+                {countBodyweightInVolume ? 'On' : 'Off'}
+              </button>
+            </div>
+            {countBodyweightInVolume && (
+              <div className="mt-3">
+                <div className="text-white/70 text-xs mb-1">Your body weight</div>
+                <input
+                  type="number"
+                  min="1"
+                  step="0.1"
+                  value={userBodyWeight || ''}
+                  onChange={(e) => handleBodyWeightChange(e.target.value)}
+                  placeholder="Enter your weight in kg"
+                  className="w-full h-11 rounded-xl bg-white/10 border border-white/20 px-4 text-white placeholder-white/40 outline-none focus-glow transition-all"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

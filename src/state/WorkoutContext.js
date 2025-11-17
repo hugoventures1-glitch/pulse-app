@@ -350,6 +350,11 @@ export function WorkoutProvider({ children }) {
     return Math.max(0, end - workoutStartAt);
   }, [workoutStartAt, isPaused, pausedAt]);
 
+  // Update user profile helper (defined at top level to avoid hooks violations)
+  const updateUserProfile = useCallback((updates) => {
+    setUserProfile(prev => ({ ...prev, ...updates }));
+  }, []);
+
   // Connectivity monitoring
   const [isOnline, setIsOnline] = useState(window.navigator.onLine);
   useEffect(() => {
@@ -375,17 +380,17 @@ export function WorkoutProvider({ children }) {
   }
 
   // Log a completed set (increments)
-  function logSetCompletion({ exercise, reps, weight, sets: totalSets }) {
+  function logSetCompletion({ exercise, reps, weight, sets: totalSets, isBodyweight = false }) {
     if (!workoutStartAt) setWorkoutStartAt(Date.now());
     setSetProgress(prev => {
       const curr = prev[exercise] || { progress: 0, values: [] };
-      // Store actual reps, weight
-      const nextValues = [...curr.values, { reps, weight }];
+      // Store actual reps, weight, and isBodyweight flag
+      const nextValues = [...curr.values, { reps, weight, isBodyweight }];
       const nextValue = curr.progress + 1;
       console.log(`Increment set for ${exercise}: ${nextValue}/${totalSets}`);
       // Append to history (one entry per set)
       try {
-        const entry = { ts: Date.now(), exercise, reps: Number(reps)||0, weight: Number(weight)||0 };
+        const entry = { ts: Date.now(), exercise, reps: Number(reps)||0, weight: Number(weight)||0, isBodyweight: isBodyweight || false };
         setHistory(h => [...h, entry]);
         console.log('History appended:', entry);
       } catch(_){}
@@ -436,9 +441,9 @@ export function WorkoutProvider({ children }) {
   };
   const addAdditionalExercise = (obj) => {
     setAdditionalExercises((prev) => {
-      // Avoid duplicates: by name + set
-      if (prev.find(e => e.name === obj.name && e.sets === obj.sets)) return prev;
-      return [...prev, { ...obj, complete: true }];
+      // Always add new exercise entries - each logged set should be a separate entry
+      // Use timestamp to ensure uniqueness even for same exercise/weight/reps
+      return [...prev, { ...obj, complete: true, timestamp: Date.now(), id: `${obj.name}-${Date.now()}` }];
     });
   };
 
@@ -738,9 +743,7 @@ export function WorkoutProvider({ children }) {
     userProfile,
     setUserProfile,
     userStats,
-    updateUserProfile: useCallback((updates) => {
-      setUserProfile(prev => ({ ...prev, ...updates }));
-    }, []),
+    updateUserProfile,
     isOnline,
     history,
     // Program selection
@@ -769,7 +772,7 @@ export function WorkoutProvider({ children }) {
     // Data retention
     exportHistory,
     getRetentionInfo,
-  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, userProfile, userStats, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout, getProgramDefinition, getBaseProgram, customPrograms, saveCustomProgram, resetCustomProgram, savedWorkouts, saveCustomWorkoutTemplate, deleteCustomWorkoutTemplate, getSavedWorkoutById, startWorkoutFromTemplate, buildPlanFromTemplate, exportHistory, getRetentionInfo, updateAdditionalExercise, removeAdditionalExercise]);
+  }), [logs, currentExercise, updateFromCommand, workoutPlan, completedExercises, additionalExercises, setProgress, currentPlanIdx, workoutStartAt, prefs, userProfile, userStats, isOnline, history, isPaused, pauseWorkout, resumeWorkout, getElapsedMs, selectedProgramId, selectProgram, getCurrentDayIndex, endWorkout, getProgramDefinition, getBaseProgram, customPrograms, saveCustomProgram, resetCustomProgram, savedWorkouts, saveCustomWorkoutTemplate, deleteCustomWorkoutTemplate, getSavedWorkoutById, startWorkoutFromTemplate, buildPlanFromTemplate, exportHistory, getRetentionInfo, updateAdditionalExercise, removeAdditionalExercise, updateUserProfile]);
 
   return (
     <WorkoutContext.Provider value={value}>{children}</WorkoutContext.Provider>

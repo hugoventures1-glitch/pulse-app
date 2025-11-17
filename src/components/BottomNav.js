@@ -48,7 +48,8 @@ export default function BottomNav() {
   const isActive = (path) => location.pathname === path;
   const isSummaryPage = location.pathname === '/summary';
   const isWorkoutDetailsPage = location.pathname === '/workout-details';
-  const shouldDimNav = isSummaryPage || isWorkoutDetailsPage;
+  const isCustomizeProgramPage = location.pathname === '/customize-program';
+  const shouldDimNav = isSummaryPage || isWorkoutDetailsPage || isCustomizeProgramPage;
   
   // Shade/disable navigation when on summary or workout details page
   const navOpacity = shouldDimNav ? 0.3 : 1;

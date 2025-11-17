@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createRecognizer, attachPressHold, isSpeechSupported } from '../lib/speech';
 import { parseCommand } from '../lib/parseCommands';
 import { useWorkout } from '../state/WorkoutContext';
@@ -13,6 +13,10 @@ export default function VoiceInterface() {
   const recRef = useRef(null);
   const ctrlRef = useRef(null);
   const [error, setError] = useState('');
+  const [errorVisible, setErrorVisible] = useState(false);
+  const [errorProgress, setErrorProgress] = useState(100);
+  const errorTimeoutRef = useRef(null);
+  const errorProgressRef = useRef(null);
 
   useEffect(() => {
     if (!isSpeechSupported()) return;
@@ -51,6 +55,73 @@ export default function VoiceInterface() {
     ctrlRef.current = ctl;
     return () => { try { rec.stop(); } catch(_){} };
   }, [addLog, markExerciseComplete, addAdditionalExercise, workoutPlan]);
+
+  // Auto-dismiss error after 5 seconds
+  useEffect(() => {
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    if (errorProgressRef.current) {
+      clearInterval(errorProgressRef.current);
+      errorProgressRef.current = null;
+    }
+
+    if (error) {
+      setErrorVisible(true);
+      setErrorProgress(100);
+      const startTime = Date.now();
+      const duration = 5000;
+      
+      errorProgressRef.current = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, 100 - (elapsed / duration) * 100);
+        setErrorProgress(remaining);
+        if (remaining <= 0) {
+          clearInterval(errorProgressRef.current);
+          errorProgressRef.current = null;
+        }
+      }, 16);
+
+      errorTimeoutRef.current = setTimeout(() => {
+        setErrorVisible(false);
+        setTimeout(() => {
+          setError('');
+          setErrorProgress(100);
+        }, 300);
+      }, 5000);
+    } else {
+      setErrorVisible(false);
+      setErrorProgress(100);
+    }
+
+    return () => {
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+        errorTimeoutRef.current = null;
+      }
+      if (errorProgressRef.current) {
+        clearInterval(errorProgressRef.current);
+        errorProgressRef.current = null;
+      }
+    };
+  }, [error]);
+
+  const dismissError = useCallback(() => {
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    if (errorProgressRef.current) {
+      clearInterval(errorProgressRef.current);
+      errorProgressRef.current = null;
+    }
+    setErrorVisible(false);
+    setTimeout(() => {
+      setError('');
+      setErrorProgress(100);
+    }, 300);
+  }, []);
   return (
     <div className="w-full max-w-[375px] px-4 py-5 space-y-5">
       <h2 className="text-white text-2xl font-semibold">Voice</h2>
@@ -75,7 +146,28 @@ export default function VoiceInterface() {
             {aiParsed.exercise && <b>{aiParsed.exercise}</b>} {aiParsed.weight && `${aiParsed.weight}kg`} {aiParsed.reps && `${aiParsed.reps} reps`} {aiParsed.sets && `${aiParsed.sets} sets`}
           </span>
         )}
-        {error && <span className="inline-block px-3 py-2 rounded-xl bg-rose-600/80 text-xs text-white">{error}</span>}
+        {error && (
+          <div 
+            className={`inline-block px-3 py-2 rounded-xl bg-rose-600/80 text-xs text-white transition-opacity duration-300 relative overflow-hidden cursor-pointer ${
+              errorVisible ? 'opacity-100' : 'opacity-0'
+            }`}
+            onClick={dismissError}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                dismissError();
+              }
+            }}
+          >
+            {error}
+            <div 
+              className="absolute bottom-0 left-0 h-0.5 bg-white/40 transition-all duration-100"
+              style={{ width: `${errorProgress}%`, transition: 'width 100ms linear' }}
+            />
+          </div>
+        )}
       </div>
 
       <div className="pulse-glass rounded-3xl p-4">

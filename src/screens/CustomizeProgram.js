@@ -32,6 +32,7 @@ export default function CustomizeProgram() {
     getBaseProgram,
     saveCustomProgram,
     saveCustomWorkoutTemplate,
+    selectProgram,
   } = useWorkout();
 
   const baseTemplate = useMemo(() => getBaseProgram(programId), [getBaseProgram, programId]);
@@ -135,6 +136,28 @@ export default function CustomizeProgram() {
     }));
     saveCustomProgram(programId, sanitized);
     setShowSaveDialog(true);
+  };
+
+  const handleStartWorkout = () => {
+    // Save the customized program first so it's available when selectProgram is called
+    const sanitized = deepClone(editedProgram);
+    sanitized.id = programId;
+    sanitized.name = sanitized.name || `My ${baseTemplate.name}`;
+    sanitized.days = sanitized.days.map((day) => ({
+      name: day.name,
+      exercises: day.exercises.map((exercise) => ({
+        name: exercise.name,
+        sets: Number(exercise.sets) || 0,
+        reps: Number(exercise.reps) || 0,
+        weight: Number(exercise.weight) || 0,
+      })),
+    }));
+    saveCustomProgram(programId, sanitized);
+    
+    // Select the program and navigate to workout preview
+    selectProgram(programId);
+    navigate('/workout-preview');
+    if (window?.__toast) window.__toast('Workout ready!');
   };
 
   const filteredLibrary = useMemo(() => {
@@ -246,15 +269,17 @@ export default function CustomizeProgram() {
       </div>
 
       <div className="fixed inset-x-0 bottom-0 z-20">
-        <div className="mx-auto w-full max-w-[375px] px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-2">
-          <div className="pulse-glass rounded-2xl p-4 space-y-2">
-            <button
-              onClick={handleSave}
-              className="w-full h-14 rounded-2xl font-bold text-lg bg-white text-slate-900 active:scale-[0.99] transition"
-            >
-              Save Changes
-            </button>
-          </div>
+        <div className="mx-auto w-full max-w-[375px] px-4 pb-[calc(env(safe-area-inset-bottom)+100px)]">
+          <button
+            onClick={handleStartWorkout}
+            className="w-full h-9 rounded-lg font-medium text-xs text-white active:scale-[0.98] transition-transform hover:scale-[1.02]"
+            style={{
+              background: 'linear-gradient(135deg, #FF9500 0%, #FF6B00 100%)',
+              boxShadow: '0 4px 12px rgba(255, 149, 0, 0.25)'
+            }}
+          >
+            Start Workout
+          </button>
         </div>
       </div>
 

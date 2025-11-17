@@ -18,7 +18,7 @@ function ProgressRing({ percent = 100, size = 140, strokeWidth = 12 }) {
 
 export default function WorkoutSummary() {
   const navigate = useNavigate();
-  const { workoutPlan = [], setProgress = {}, workoutStartAt, endWorkout } = useWorkout();
+  const { workoutPlan = [], setProgress = {}, workoutStartAt, endWorkout, prefs } = useWorkout();
 
   const stats = useMemo(() => {
     // Total sets and completed
@@ -31,8 +31,18 @@ export default function WorkoutSummary() {
       completedSets += Math.min(prog, sets);
       if (prog >= sets) completedExercises += 1;
       const values = setProgress?.[ex.name]?.values || [];
+      const countBodyweightInVolume = prefs?.countBodyweightInVolume || false;
+      const userBodyWeight = prefs?.userBodyWeight || 0;
       values.forEach(v => {
         const r = parseInt(v?.reps || 0, 10) || 0;
+        if (v?.isBodyweight) {
+          // If setting is enabled and user body weight is set, use it for volume calculation
+          if (countBodyweightInVolume && userBodyWeight > 0) {
+            volume += r * userBodyWeight;
+          }
+          // Otherwise, skip (count as 0)
+          return;
+        }
         const w = parseInt(v?.weight || 0, 10) || 0;
         volume += r * w;
       });
@@ -41,7 +51,7 @@ export default function WorkoutSummary() {
     const durationMs = workoutStartAt ? Date.now() - workoutStartAt : 0;
     const durationMin = Math.max(1, Math.round(durationMs / 60000));
     return { plannedSets, completedSets, volume, percent, completedExercises };
-  }, [workoutPlan, setProgress, workoutStartAt]);
+  }, [workoutPlan, setProgress, workoutStartAt, prefs]);
 
   const isComplete = stats.percent >= 100;
 
