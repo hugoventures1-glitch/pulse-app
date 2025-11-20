@@ -891,14 +891,46 @@ export default function FocusMode() {
             });
           }
 
+          // Build context with target reps/weight from workout plan
+          // In non-Quick Start mode, get target values from workout plan
+          let targetReps = null;
+          let targetWeight = null;
+          
+          if (!callbacks.isQuickStart && exerciseNameForParsing) {
+            // Find exercise in workout plan to get target reps/weight
+            const workoutExercise = callbacks.workoutPlan.find(
+              ex => ex.name?.toLowerCase() === exerciseNameForParsing.toLowerCase()
+            );
+            if (workoutExercise) {
+              targetReps = workoutExercise.reps || null;
+              targetWeight = workoutExercise.weight || null;
+              console.log('[VOICE PARSER] Found target values from workout plan:', {
+                exercise: exerciseNameForParsing,
+                targetReps,
+                targetWeight
+              });
+            }
+          } else if (exerciseForParsing) {
+            // Use exerciseForParsing if available (non-Quick Start mode with detected exercise)
+            targetReps = exerciseForParsing.reps || null;
+            targetWeight = exerciseForParsing.weight || null;
+          }
+          
           const context = {
             currentExercise: exerciseNameForParsing,
             lastWeight: null,
             lastReps: null,
-            targetWeight: exerciseForParsing?.weight || null,
-            targetReps: exerciseForParsing?.reps || null,
+            targetWeight: targetWeight,
+            targetReps: targetReps,
             isFirstSet: isFirstSet || (callbacks.isQuickStart && isFirstSetQuickStart)
           };
+          
+          console.log('[VOICE PARSER] Context with target reps:', {
+            exercise: exerciseNameForParsing,
+            targetReps,
+            targetWeight,
+            isFirstSet: context.isFirstSet
+          });
 
           if (exerciseProgress && loggedSets.length > 0) {
             const lastSet = loggedSets[loggedSets.length - 1];

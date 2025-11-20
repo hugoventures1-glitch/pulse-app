@@ -248,21 +248,46 @@ export async function parseWorkoutWithClaude(transcript, context = {}) {
       }
     }
 
+    // Determine if user ONLY provided weight (no reps mentioned)
+    // Check if weight is provided but reps are not
+    const onlyWeightProvided = (weight !== undefined && weight > 0) && (reps === undefined);
+    
+    console.log('[CLAUDE PARSER] Reps inference:', {
+      onlyWeightProvided,
+      hasTargetReps: targetReps !== null,
+      targetReps,
+      hasLastReps: lastReps !== null,
+      lastReps,
+      isFirstSet,
+      sameRepsMatch: !!sameRepsMatch
+    });
+    
     if (reps === undefined && sameRepsMatch && lastReps !== null) {
+      // User explicitly said "same reps" - always use last reps
       reps = lastReps;
-    } else if (reps === undefined && hasMemory && lastLoggedSet) {
+      notes.push('using_explicit_same_reps');
+    } else if (reps === undefined && onlyWeightProvided && targetReps !== null) {
+      // PRIORITY: If user only provided weight (no reps), use target reps from workout plan
+      // This ensures "45 kg" uses the planned reps (e.g., 10 reps) for that exercise
+      reps = targetReps;
+      notes.push('using_target_reps');
+      console.log('[CLAUDE PARSER] Only weight provided, using target reps:', targetReps);
+    } else if (reps === undefined && hasMemory && lastLoggedSet && !onlyWeightProvided) {
+      // Use last logged set reps only if weight wasn't explicitly provided alone
       reps = lastLoggedSet.reps ?? reps;
       if (reps !== undefined) notes.push('memory_reps');
-    } else if (reps === undefined && !isFirstSet && lastReps !== null) {
+    } else if (reps === undefined && !isFirstSet && lastReps !== null && !onlyWeightProvided) {
       // For subsequent sets, use last logged reps from same exercise
+      // But don't use this if user only provided weight (target reps takes priority)
       reps = lastReps;
       notes.push('using_last_reps');
     } else if (reps === undefined && targetReps !== null) {
-      // Use target reps if available (works for both first and subsequent sets)
+      // Fallback: Use target reps if available (works for both first and subsequent sets)
       // If user provided weight but not reps, and we have target reps, use it
       // This provides context-aware behavior: "60 kg" → use target reps (e.g., 10 reps)
       reps = targetReps;
       notes.push('using_target_reps');
+      console.log('[CLAUDE PARSER] Using target reps as fallback:', targetReps);
     }
 
     // Check if we need confirmation for missing reps
